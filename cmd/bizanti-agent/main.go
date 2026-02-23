@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"syscall"
+	"unsafe"
 
 	"github.com/NowakAdmin/BizantiAgent/internal/agent"
 	"github.com/NowakAdmin/BizantiAgent/internal/config"
@@ -148,6 +149,9 @@ func hideConsoleWindow() {
 		return
 	}
 
+	// Ustaw title okna konsoli
+	setConsoleTitle(fmt.Sprintf("Bizanti Agent v%s", version.Version))
+
 	// Pobierz handle do bieżącego okna konsoli
 	getConsoleFn := syscall.NewLazyDLL("kernel32.dll").NewProc("GetConsoleWindow")
 	hwnd, _, _ := getConsoleFn.Call()
@@ -158,3 +162,14 @@ func hideConsoleWindow() {
 		showWindowFn.Call(hwnd, 0) // 0 = SW_HIDE
 	}
 }
+
+// setConsoleTitle ustawia title okna konsoli na Windows
+func setConsoleTitle(title string) {
+	if runtime.GOOS != "windows" {
+		return
+	}
+	setConsoleTitleFn := syscall.NewLazyDLL("kernel32.dll").NewProc("SetConsoleTitleW")
+	titlePtr, _ := syscall.UTF16PtrFromString(title)
+	setConsoleTitleFn.Call(uintptr(unsafe.Pointer(titlePtr)))
+}
+

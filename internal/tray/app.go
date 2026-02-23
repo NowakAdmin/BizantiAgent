@@ -1,14 +1,13 @@
 package tray
 
 import (
-	"bytes"
 	"context"
-	"image"
-	"image/color"
-	"image/png"
+	_ "image/png"
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"time"
 
 	"github.com/getlantern/systray"
@@ -41,9 +40,10 @@ func (a *App) Run() {
 }
 
 func (a *App) onReady() {
-	// Wygeneruj ikonę PNG (16x16, teal square)
-	iconData := generateIcon(16)
-	systray.SetIcon(iconData)
+	// Załaduj ikonę bizanti logo
+	if iconData := loadIcon(); len(iconData) > 0 {
+		systray.SetIcon(iconData)
+	}
 
 	systray.SetTitle("Bizanti Agent")
 	systray.SetTooltip("Bizanti Agent - local device bridge")
@@ -61,8 +61,10 @@ func (a *App) onReady() {
 		autostartItem.Check()
 	}
 
+	systray.AddSeparator()
 	updateItem := systray.AddMenuItem("Sprawdź aktualizacje", "Sprawdź nowszą wersję")
-	versionItem := systray.AddMenuItem("Wersja: "+version.Version, "Wersja agenta")
+	settingsItem := systray.AddMenuItem("Ustawienia", "Otwórz plik konfiguracji")
+	versionItem := systray.AddMenuItem("Wersja: "+version.Version, "Wersja agenta: "+version.Version)
 	versionItem.Disable()
 
 	systray.AddSeparator()
@@ -86,10 +88,11 @@ func (a *App) onReady() {
 
 				if startErr := a.agent.Start(ctx); startErr != nil {
 					a.logger.Printf("Błąd startu agenta: %v", startErr)
+					status.SetTitle("Status: błąd")
 					continue
 				}
 
-				status.SetTitle("Status: online")
+				status.SetTitle("Status: łączenie...")
 				start.Disable()
 				stop.Enable()
 
@@ -138,7 +141,21 @@ func (a *App) onReady() {
 				} else {
 					a.logger.Printf("Brak nowszej wersji")
 				}
-
+				case <-settingsItem.ClickedCh:
+					cfgPath := config.Path()
+					if _, err := os.Stat(cfgPath); err != nil {
+						// Jeśli plik nie istnieje, utwórz go
+						if errCreate := config.Save(a.cfg); errCreate != nil {
+							a.logger.Printf("Błąd tworzenia konfiguracji: %v", errCreate)
+							continue
+						}
+					}
+					// Otwórz plik w edytorze
+					if runtime.GOOS == "windows" {
+						if err := exec.Command("notepad.exe", cfgPath).Start(); err != nil {
+							a.logger.Printf("Błąd otwarcia edytora: %v", err)
+						}
+					}
 			case <-updateTicker.C:
 				checkCtx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 				result, updateErr := update.CheckGitHubRelease(checkCtx, a.cfg.Update.GitHubRepo)
@@ -171,43 +188,28 @@ func openURL(url string) error {
 	return cmd.Start()
 }
 
-// generateIcon tworzy prostą ikonę PNG (rozmiar x rozmiar pikseli) w kolorze teal
-func generateIcon(size int) []byte {
-	// Utwórz pusty obraz
-	img := image.NewRGBA(image.Rect(0, 0, size, size))
+// loadIcon wczytuje ikonę bizanti logo z dysku i zwraca raw bytes dla systray
+func loadIcon() []byte {
+	// Spróbuj wczytać z assets w executable directory
+	exePath, err := os.Executable()
+	if err != nil {
+		return nil
+	}
+	exeDir := filepath.Dir(exePath)
 
-	// Wypełnij tłem (biały)
-	white := color.RGBA{255, 255, 255, 255}
-	for x := 0; x < size; x++ {
-		for y := 0; y < size; y++ {
-			img.SetRGBA(x, y, white)
-		}
+	logoPath := filepath.Join(exeDir, "assets", "bizanti_logo.png")
+
+	// Fallback - jeśli nie ma w exe dir, spróbuj z bieżącego repo
+	if _, err := os.Stat(logoPath); err != nil {
+		logoPath = "assets/bizanti_logo.png"
 	}
 
-	// Rysuj obramowanie i kwadrat w kolorze teal
-	teal := color.RGBA{0, 128, 128, 255}
-	margin := size / 6
-
-	// Obramowanie
-	for x := 0; x < size; x++ {
-		img.SetRGBA(x, margin, teal)
-		img.SetRGBA(x, size-margin-1, teal)
-	}
-	for y := margin; y < size-margin; y++ {
-		img.SetRGBA(margin, y, teal)
-		img.SetRGBA(size-margin-1, y, teal)
+	data, err := os.ReadFile(logoPath)
+	if err != nil {
+		return nil
 	}
 
-	// Wewnętrzny kwadrat (urządzenie/symbol)
-	innerMargin := margin + 1
-	for x := innerMargin; x < size-innerMargin; x++ {
-		for y := innerMargin + 2; y < size-innerMargin-2; y++ {
-			img.SetRGBA(x, y, teal)
-		}
-	}
-
-	// Zakoduj na PNG
-	var buf bytes.Buffer
-	png.Encode(&buf, img)
-	return buf.Bytes()
+	return data
 }
+
+
