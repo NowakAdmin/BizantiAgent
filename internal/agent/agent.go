@@ -50,6 +50,11 @@ type Agent struct {
 	done    chan struct{}
 	cancel  context.CancelFunc
 	wg      sync.WaitGroup
+
+	// Retry tracking
+	consecutiveFailures int
+	pausedUntil         time.Time
+	mu                  sync.Mutex
 }
 
 func New(cfg *config.Config, logger *log.Logger) *Agent {
@@ -95,6 +100,64 @@ func (a *Agent) IsRunning() bool {
 	return a.running.Load()
 }
 
+// recordFailure increments failure counter and sets pause if threshold reached
+func (a *Agent) recordFailure() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	a.consecutiveFailures++
+
+	// After 3 failures, pause for 5 minutes
+	if a.consecutiveFailures >= 3 {
+		a.pausedUntil = time.Now().Add(5 * time.Minute)
+		a.logger.Printf("Zbyt wiele błędów (%d). Pauza na 5 minut.", a.consecutiveFailures)
+	}
+}
+
+// recordSuccess resets failure counter
+func (a *Agent) recordSuccess() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	a.consecutiveFailures = 0
+	a.pausedUntil = time.Time{}
+}
+
+// isPaused checks if we're currently paused from retrying
+func (a *Agent) isPaused() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if a.pausedUntil.IsZero() {
+		return false
+	}
+
+	if time.Now().After(a.pausedUntil) {
+		a.pausedUntil = time.Time{}
+		return false
+	}
+
+	return true
+}
+
+// GetStatus returns human-readable connection status for display
+func (a *Agent) GetStatus() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if a.running.Load() {
+		if !a.pausedUntil.IsZero() && time.Now().Before(a.pausedUntil) {
+			return fmt.Sprintf("Pauza (próba za %d s)", int(a.pausedUntil.Sub(time.Now()).Seconds()))
+		}
+		if a.consecutiveFailures > 0 {
+			return fmt.Sprintf("Łączenie... (próba %d)", a.consecutiveFailures+1)
+		}
+		return "Łączenie..."
+	}
+
+	return "Offline"
+}
+
 func (a *Agent) loop(ctx context.Context) {
 	if strings.TrimSpace(a.cfg.AgentToken) == "" {
 		a.logger.Printf("Brak tokena agenta. Użyj: bizanti-agent configure --token=...")
@@ -116,6 +179,17 @@ func (a *Agent) loop(ctx context.Context) {
 		default:
 		}
 
+		// Jeśli jesteśmy w pauzie, czekaj
+		if a.isPaused() {
+			a.logger.Printf("Agent w pauzie. Czekam zanim spróbuję ponownie...")
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(30 * time.Second):
+				continue
+			}
+		}
+
 		var err error
 		websocketURL := strings.TrimSpace(a.cfg.WebSocketURL)
 
@@ -123,6 +197,9 @@ func (a *Agent) loop(ctx context.Context) {
 			err = a.runSession(ctx)
 			if err != nil && !errors.Is(err, context.Canceled) {
 				a.logger.Printf("Sesja WebSocket zakończona: %v", err)
+				a.recordFailure()
+			} else if err == nil {
+				a.recordSuccess()
 			}
 
 			if ctx.Err() != nil {
@@ -133,6 +210,11 @@ func (a *Agent) loop(ctx context.Context) {
 			_ = a.runHTTPPolling(ctx, 45*time.Second)
 		} else {
 			err = a.runHTTPPolling(ctx, 0)
+			if err != nil && !errors.Is(err, context.Canceled) {
+				a.recordFailure()
+			} else if err == nil {
+				a.recordSuccess()
+			}
 		}
 
 		if err != nil && !errors.Is(err, context.Canceled) {
@@ -220,7 +302,7 @@ func (a *Agent) heartbeat(ctx context.Context) error {
 
 	if response.StatusCode >= 300 {
 		body, _ := io.ReadAll(response.Body)
-		return fmt.Errorf("heartbeat status %d: %s", response.StatusCode, strings.TrimSpace(string(body)))
+		return fmt.Errorf("heartbeat status %d: %s", response.StatusCode, summarizeResponseBody(body))
 	}
 
 	return nil
@@ -242,7 +324,7 @@ func (a *Agent) pullCommands(ctx context.Context) ([]IncomingMessage, error) {
 
 	if response.StatusCode >= 300 {
 		body, _ := io.ReadAll(response.Body)
-		return nil, fmt.Errorf("pull commands status %d: %s", response.StatusCode, strings.TrimSpace(string(body)))
+		return nil, fmt.Errorf("pull commands status %d: %s", response.StatusCode, summarizeResponseBody(body))
 	}
 
 	var parsed pullCommandsResponse
@@ -302,6 +384,25 @@ func (a *Agent) reportCommandResult(ctx context.Context, jobID string, result ma
 	}
 
 	return nil
+}
+
+func summarizeResponseBody(body []byte) string {
+	text := strings.TrimSpace(string(body))
+	if text == "" {
+		return "(pusta odpowiedź)"
+	}
+
+	lower := strings.ToLower(text)
+	if strings.Contains(lower, "<!doctype") || strings.Contains(lower, "<html") {
+		return "(odpowiedź HTML pominięta)"
+	}
+
+	const maxLen = 200
+	if len(text) > maxLen {
+		return text[:maxLen] + "..."
+	}
+
+	return text
 }
 
 func (a *Agent) newAPIRequest(ctx context.Context, method string, path string, body io.Reader) (*http.Request, error) {

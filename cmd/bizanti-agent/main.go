@@ -4,17 +4,18 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"io"
 	"log"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"runtime"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"github.com/NowakAdmin/BizantiAgent/internal/agent"
 	"github.com/NowakAdmin/BizantiAgent/internal/config"
+	"github.com/NowakAdmin/BizantiAgent/internal/setup"
 	"github.com/NowakAdmin/BizantiAgent/internal/tray"
 	"github.com/NowakAdmin/BizantiAgent/internal/version"
 )
@@ -101,15 +102,40 @@ func runHeadless() {
 }
 
 func runTray() {
+	// Sprawdź first-run setup (czy plik jest w poprawnym miejscu)
+	if runtime.GOOS == "windows" && setup.IsFirstRun() {
+		if showYesNoMessage("Bizanti Agent", fmt.Sprintf(
+			"Rekomendujemy przeniesienie pliku do:\n%s\\BizantiAgent\\\n\nCzy chcesz to zrobić teraz?",
+			os.Getenv("PROGRAMDATA"),
+		)) {
+			if err := setup.MoveToAppData(); err != nil {
+				showInfoMessage("Bizanti Agent", fmt.Sprintf("Błąd przenoszenia: %v", err))
+			} else {
+				showInfoMessage("Bizanti Agent", "Instalacja zakończona. Agent uruchomi się ponownie.")
+				setup.RestartApp("")
+				return
+			}
+		}
+	}
+
 	cfg, err := config.LoadOrCreateDefault()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Błąd konfiguracji: %v\n", err)
 		os.Exit(1)
 	}
 
-	// Ukryj okno konsoli na Windows (agent będzie pracować w background)
 	if runtime.GOOS == "windows" {
-		hideConsoleWindow()
+		if !acquireSingleInstance() {
+			showInfoMessage("Bizanti Agent", "Agent jest już uruchomiony.")
+			return
+		}
+		defer releaseSingleInstance()
+	}
+
+	// Ustaw title okna konsoli PRZED ukryciem (żeby go było widać na chwilę)
+	if runtime.GOOS == "windows" {
+		setConsoleTitle(fmt.Sprintf("Bizanti Agent v%s", version.Version))
+		installConsoleCloseHandler()
 	}
 
 	logger, closeFn, err := buildLogger()
@@ -121,7 +147,52 @@ func runTray() {
 
 	a := agent.New(cfg, logger)
 	t := tray.New(cfg, a, logger)
+
+	// Ukryj okno konsoli PO ustawieniu title (ale już przy starcie)
+	if runtime.GOOS == "windows" {
+		go func() {
+			time.Sleep(100 * time.Millisecond) // Krótkie opóźnienie żeby user zobaczył okno
+			hideConsole()                       // Wtedy ukryj
+		}()
+	}
+
 	t.Run()
+}
+
+// hideConsole ukrywa bieżące okno konsoli na Windows
+func hideConsole() {
+	if runtime.GOOS != "windows" {
+		return
+	}
+
+	getConsoleFn := syscall.NewLazyDLL("kernel32.dll").NewProc("GetConsoleWindow")
+	hwnd, _, _ := getConsoleFn.Call()
+
+	if hwnd != 0 {
+		showWindowFn := syscall.NewLazyDLL("user32.dll").NewProc("ShowWindow")
+		showWindowFn.Call(hwnd, 0) // 0 = SW_HIDE
+	}
+}
+
+const ctrlCloseEvent = 2
+
+var consoleCtrlHandler uintptr
+
+func installConsoleCloseHandler() {
+	if runtime.GOOS != "windows" {
+		return
+	}
+
+	setConsoleCtrlHandler := syscall.NewLazyDLL("kernel32.dll").NewProc("SetConsoleCtrlHandler")
+	consoleCtrlHandler = syscall.NewCallback(func(ctrlType uint32) uintptr {
+		if ctrlType == ctrlCloseEvent {
+			hideConsole()
+			return 1
+		}
+		return 0
+	})
+
+	setConsoleCtrlHandler.Call(consoleCtrlHandler, 1)
 }
 
 func buildLogger() (*log.Logger, func(), error) {
@@ -129,38 +200,19 @@ func buildLogger() (*log.Logger, func(), error) {
 	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
 		return nil, nil, err
 	}
+	_ = os.Remove(logPath)
 
-	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	w := io.MultiWriter(os.Stdout, f)
-	logger := log.New(w, "[bizanti-agent] ", log.LstdFlags|log.Lmicroseconds)
+	logger := log.New(f, "[bizanti-agent] ", log.LstdFlags|log.Lmicroseconds)
+	logger.Printf("Logger uruchomiony, log: %s", logPath)
 
 	return logger, func() {
 		_ = f.Close()
 	}, nil
-}
-
-// hideConsoleWindow ukrywa okno konsoli na Windows (agent pracuje w tle tylko w tray)
-func hideConsoleWindow() {
-	if runtime.GOOS != "windows" {
-		return
-	}
-
-	// Ustaw title okna konsoli
-	setConsoleTitle(fmt.Sprintf("Bizanti Agent v%s", version.Version))
-
-	// Pobierz handle do bieżącego okna konsoli
-	getConsoleFn := syscall.NewLazyDLL("kernel32.dll").NewProc("GetConsoleWindow")
-	hwnd, _, _ := getConsoleFn.Call()
-
-	// Jeśli istnieje okno konsoli, ukryj je (SW_HIDE = 0)
-	if hwnd != 0 {
-		showWindowFn := syscall.NewLazyDLL("user32.dll").NewProc("ShowWindow")
-		showWindowFn.Call(hwnd, 0) // 0 = SW_HIDE
-	}
 }
 
 // setConsoleTitle ustawia title okna konsoli na Windows
@@ -172,4 +224,72 @@ func setConsoleTitle(title string) {
 	titlePtr, _ := syscall.UTF16PtrFromString(title)
 	setConsoleTitleFn.Call(uintptr(unsafe.Pointer(titlePtr)))
 }
+
+const errorAlreadyExists = 183
+
+var instanceMutexHandle syscall.Handle
+
+func acquireSingleInstance() bool {
+	createMutex := syscall.NewLazyDLL("kernel32.dll").NewProc("CreateMutexW")
+	getLastError := syscall.NewLazyDLL("kernel32.dll").NewProc("GetLastError")
+
+	namePtr, _ := syscall.UTF16PtrFromString("Global\\BizantiAgent")
+	handle, _, _ := createMutex.Call(0, 1, uintptr(unsafe.Pointer(namePtr)))
+	if handle == 0 {
+		return true
+	}
+
+	errCode, _, _ := getLastError.Call()
+	if errCode == errorAlreadyExists {
+		closeHandle := syscall.NewLazyDLL("kernel32.dll").NewProc("CloseHandle")
+		closeHandle.Call(handle)
+		return false
+	}
+
+	instanceMutexHandle = syscall.Handle(handle)
+	return true
+}
+
+func releaseSingleInstance() {
+	if runtime.GOOS != "windows" {
+		return
+	}
+	if instanceMutexHandle == 0 {
+		return
+	}
+
+	closeHandle := syscall.NewLazyDLL("kernel32.dll").NewProc("CloseHandle")
+	closeHandle.Call(uintptr(instanceMutexHandle))
+	instanceMutexHandle = 0
+}
+
+const mbOK = 0x00000000
+const mbYesNo = 0x00000004
+const mbIconInfo = 0x00000040
+const idYes = 6
+
+func showInfoMessage(title, message string) {
+	if runtime.GOOS != "windows" {
+		return
+	}
+
+	messageBox := syscall.NewLazyDLL("user32.dll").NewProc("MessageBoxW")
+	textPtr, _ := syscall.UTF16PtrFromString(message)
+	titlePtr, _ := syscall.UTF16PtrFromString(title)
+	messageBox.Call(0, uintptr(unsafe.Pointer(textPtr)), uintptr(unsafe.Pointer(titlePtr)), mbOK|mbIconInfo)
+}
+
+// showYesNoMessage displays a Yes/No dialog and returns true if user clicked Yes
+func showYesNoMessage(title, message string) bool {
+	if runtime.GOOS != "windows" {
+		return false
+	}
+
+	messageBox := syscall.NewLazyDLL("user32.dll").NewProc("MessageBoxW")
+	textPtr, _ := syscall.UTF16PtrFromString(message)
+	titlePtr, _ := syscall.UTF16PtrFromString(title)
+	ret, _, _ := messageBox.Call(0, uintptr(unsafe.Pointer(textPtr)), uintptr(unsafe.Pointer(titlePtr)), mbYesNo|mbIconInfo)
+	return int(ret) == idYes
+}
+
 

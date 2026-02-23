@@ -71,7 +71,7 @@ func checkReleaseURL(ctx context.Context, url string) (Result, error) {
 	latest := normalize(release.TagName)
 	current := normalize(version.Version)
 
-	hasUpdate := latest != "" && latest != current
+	hasUpdate := isNewerVersion(latest, current)
 
 	return Result{
 		HasUpdate: hasUpdate,
@@ -116,7 +116,7 @@ func checkTagsURL(ctx context.Context, url string) (Result, error) {
 	latest := normalize(tags[0].Name)
 	current := normalize(version.Version)
 
-	hasUpdate := latest != "" && latest != current
+	hasUpdate := isNewerVersion(latest, current)
 
 	return Result{
 		HasUpdate: hasUpdate,
@@ -140,4 +140,42 @@ func normalize(v string) string {
 	v = strings.TrimSpace(v)
 	v = strings.TrimPrefix(v, "v")
 	return v
+}
+
+func isNewerVersion(latest, current string) bool {
+	if latest == "" || current == "" {
+		return false
+	}
+
+	latestParts := parseVersion(latest)
+	currentParts := parseVersion(current)
+
+	for i := 0; i < 3; i++ {
+		if latestParts[i] > currentParts[i] {
+			return true
+		}
+		if latestParts[i] < currentParts[i] {
+			return false
+		}
+	}
+
+	return false
+}
+
+func parseVersion(v string) [3]int {
+	parts := strings.Split(v, ".")
+	result := [3]int{0, 0, 0}
+
+	for i := 0; i < len(parts) && i < 3; i++ {
+		value := 0
+		for _, ch := range parts[i] {
+			if ch < '0' || ch > '9' {
+				break
+			}
+			value = value*10 + int(ch-'0')
+		}
+		result[i] = value
+	}
+
+	return result
 }

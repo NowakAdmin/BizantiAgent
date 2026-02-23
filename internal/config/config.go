@@ -90,7 +90,10 @@ func Save(cfg *Config) error {
 
 func Dir() string {
 	programData := os.Getenv("ProgramData")
-	if runtime.GOOS == "windows" && programData != "" {
+	if runtime.GOOS == "windows" {
+		if programData == "" {
+			programData = "C:\\ProgramData"
+		}
 		return filepath.Join(programData, "BizantiAgent")
 	}
 
