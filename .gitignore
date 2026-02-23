@@ -6,3 +6,9 @@ build/
 tmp/
 *.exe
 *.log
+
+# Certificate files (SECURITY: never commit private keys!)
+certs/
+*.pfx
+*.p12
+*.key
