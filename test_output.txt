@@ -1,0 +1,3 @@
+[bizanti-agent] 2026/02/23 12:29:57.555137 HTTP heartbeat error: Post "http://127.0.0.1:8000/api/bizanticore/agent/heartbeat": dial tcp 127.0.0.1:8000: connectex: No connection could be made because the target machine actively refused it.
+[bizanti-agent] 2026/02/23 12:29:59.555601 Pętla agenta zakończona błędem: Get "http://127.0.0.1:8000/api/bizanticore/agent/commands/next?limit=5": dial tcp 127.0.0.1:8000: connectex: No connection could be made because the target machine actively refused it.
+[bizanti-agent] 2026/02/23 12:30:00.568688 HTTP heartbeat error: Post "http://127.0.0.1:8000/api/bizanticore/agent/heartbeat": dial tcp 127.0.0.1:8000: connectex: No connection could be made because the target machine actively refused it.

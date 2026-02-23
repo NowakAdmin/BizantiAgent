@@ -30,8 +30,20 @@ func CheckGitHubRelease(ctx context.Context, repo string) (Result, error) {
 		return Result{}, fmt.Errorf("repozytorium GitHub nie może być puste")
 	}
 
+	// Spróbuj releases/latest (published releases)
 	url := fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", repo)
+	result, err := checkReleaseURL(ctx, url)
+	
+	// Jeśli nie ma published release (404), spróbuj tags
+	if err != nil && strings.Contains(err.Error(), "status: 404") {
+		url = fmt.Sprintf("https://api.github.com/repos/%s/tags", repo)
+		return checkTagsURL(ctx, url)
+	}
+	
+	return result, err
+}
 
+func checkReleaseURL(ctx context.Context, url string) (Result, error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return Result{}, err
@@ -67,6 +79,61 @@ func CheckGitHubRelease(ctx context.Context, repo string) (Result, error) {
 		URL:       release.HTMLURL,
 		Notes:     release.Body,
 	}, nil
+}
+
+func checkTagsURL(ctx context.Context, url string) (Result, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return Result{}, err
+	}
+	request.Header.Set("Accept", "application/vnd.github+json")
+
+	client := &http.Client{Timeout: 8 * time.Second}
+	response, err := client.Do(request)
+	if err != nil {
+		return Result{}, err
+	}
+	defer func() {
+		_ = response.Body.Close()
+	}()
+
+	if response.StatusCode >= 300 {
+		return Result{}, fmt.Errorf("github api zwróciło status: %d", response.StatusCode)
+	}
+
+	var tags []struct {
+		Name string `json:"name"`
+	}
+	if err = json.NewDecoder(response.Body).Decode(&tags); err != nil {
+		return Result{}, err
+	}
+
+	if len(tags) == 0 {
+		return Result{}, fmt.Errorf("brak wersji w repozytorium")
+	}
+
+	// Pobierz pierwszy (najnowszy) tag
+	latest := normalize(tags[0].Name)
+	current := normalize(version.Version)
+
+	hasUpdate := latest != "" && latest != current
+
+	return Result{
+		HasUpdate: hasUpdate,
+		Version:   latest,
+		URL:       fmt.Sprintf("https://github.com/%s/releases/tag/%s", extractRepo(url), tags[0].Name),
+		Notes:     "",
+	}, nil
+}
+
+func extractRepo(url string) string {
+	// Wyciągnij owner/repo z URL API
+	parts := strings.Split(url, "/repos/")
+	if len(parts) > 1 {
+		repoPath := strings.Split(parts[1], "/")[0:2]
+		return strings.Join(repoPath, "/")
+	}
+	return ""
 }
 
 func normalize(v string) string {

@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"syscall"
 
 	"github.com/NowakAdmin/BizantiAgent/internal/agent"
@@ -105,6 +106,11 @@ func runTray() {
 		os.Exit(1)
 	}
 
+	// Ukryj okno konsoli na Windows (agent będzie pracować w background)
+	if runtime.GOOS == "windows" {
+		hideConsoleWindow()
+	}
+
 	logger, closeFn, err := buildLogger()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Błąd loggera: %v\n", err)
@@ -134,4 +140,21 @@ func buildLogger() (*log.Logger, func(), error) {
 	return logger, func() {
 		_ = f.Close()
 	}, nil
+}
+
+// hideConsoleWindow ukrywa okno konsoli na Windows (agent pracuje w tle tylko w tray)
+func hideConsoleWindow() {
+	if runtime.GOOS != "windows" {
+		return
+	}
+
+	// Pobierz handle do bieżącego okna konsoli
+	getConsoleFn := syscall.NewLazyDLL("kernel32.dll").NewProc("GetConsoleWindow")
+	hwnd, _, _ := getConsoleFn.Call()
+
+	// Jeśli istnieje okno konsoli, ukryj je (SW_HIDE = 0)
+	if hwnd != 0 {
+		showWindowFn := syscall.NewLazyDLL("user32.dll").NewProc("ShowWindow")
+		showWindowFn.Call(hwnd, 0) // 0 = SW_HIDE
+	}
 }
