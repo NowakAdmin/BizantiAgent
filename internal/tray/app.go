@@ -1,7 +1,11 @@
 package tray
 
 import (
+	"bytes"
 	"context"
+	"image"
+	"image/color"
+	"image/png"
 	"log"
 	"os"
 	"os/exec"
@@ -37,6 +41,10 @@ func (a *App) Run() {
 }
 
 func (a *App) onReady() {
+	// Wygeneruj ikonę PNG (16x16, teal square)
+	iconData := generateIcon(16)
+	systray.SetIcon(iconData)
+
 	systray.SetTitle("Bizanti Agent")
 	systray.SetTooltip("Bizanti Agent - local device bridge")
 
@@ -161,4 +169,45 @@ func (a *App) onExit() {
 func openURL(url string) error {
 	cmd := exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
 	return cmd.Start()
+}
+
+// generateIcon tworzy prostą ikonę PNG (rozmiar x rozmiar pikseli) w kolorze teal
+func generateIcon(size int) []byte {
+	// Utwórz pusty obraz
+	img := image.NewRGBA(image.Rect(0, 0, size, size))
+
+	// Wypełnij tłem (biały)
+	white := color.RGBA{255, 255, 255, 255}
+	for x := 0; x < size; x++ {
+		for y := 0; y < size; y++ {
+			img.SetRGBA(x, y, white)
+		}
+	}
+
+	// Rysuj obramowanie i kwadrat w kolorze teal
+	teal := color.RGBA{0, 128, 128, 255}
+	margin := size / 6
+
+	// Obramowanie
+	for x := 0; x < size; x++ {
+		img.SetRGBA(x, margin, teal)
+		img.SetRGBA(x, size-margin-1, teal)
+	}
+	for y := margin; y < size-margin; y++ {
+		img.SetRGBA(margin, y, teal)
+		img.SetRGBA(size-margin-1, y, teal)
+	}
+
+	// Wewnętrzny kwadrat (urządzenie/symbol)
+	innerMargin := margin + 1
+	for x := innerMargin; x < size-innerMargin; x++ {
+		for y := innerMargin + 2; y < size-innerMargin-2; y++ {
+			img.SetRGBA(x, y, teal)
+		}
+	}
+
+	// Zakoduj na PNG
+	var buf bytes.Buffer
+	png.Encode(&buf, img)
+	return buf.Bytes()
 }
