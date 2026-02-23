@@ -1,5 +1,5 @@
-# Automated build and sign script for BizantiAgent
-# This script compiles the Go binary and signs it with the code signing certificate
+# Build and Sign BizantiAgent using NowakAdmin SoftwareSigner
+# This script compiles the Go binary and signs it using the centralized certificate
 # Usage: .\build-and-sign.ps1 [-Version "0.1.3"] [-NoSign]
 
 param(
@@ -9,15 +9,19 @@ param(
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ProjectRoot = Split-Path -Parent $ScriptDir
-$OutputDir = "$ProjectRoot"
-$OutputFile = "$OutputDir\BizantiAgent.exe"
+$OutputFile = "$ProjectRoot\BizantiAgent.exe"
+
+# Path to SoftwareSigner package (sibling directory)
+$SoftwareSignerPath = "$ProjectRoot\..\SoftwareSigner"
 
 Write-Host "╔════════════════════════════════════════════════╗" -ForegroundColor Cyan
 Write-Host "║  BIZANTI AGENT BUILD & SIGN                   ║" -ForegroundColor Cyan
+Write-Host "║  (Using NowakAdmin SoftwareSigner)            ║" -ForegroundColor Cyan
 Write-Host "╚════════════════════════════════════════════════╝" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "Version: $Version" -ForegroundColor Yellow
 Write-Host "Output: $OutputFile" -ForegroundColor Gray
+Write-Host "Signer: $SoftwareSignerPath" -ForegroundColor Gray
 Write-Host ""
 
 # Step 1: Clean previous build
@@ -59,75 +63,51 @@ try {
     exit 1
 }
 
-# Step 3: Sign
+# Step 3: Sign using SoftwareSigner
 Write-Host "Step 3/3: Signing..." -ForegroundColor Cyan
 
 if ($NoSign) {
     Write-Host "  ⊘ Skipped (--NoSign flag)" -ForegroundColor Yellow
 } else {
-    $CertPath = "$ProjectRoot\certs\bizanti-code-signing.pfx"
+    # Verify SoftwareSigner exists
+    if (!(Test-Path $SoftwareSignerPath)) {
+        Write-Host "  ✗ SoftwareSigner not found: $SoftwareSignerPath" -ForegroundColor Red
+        Write-Host "  Clone NowakAdmin/SoftwareSigner to sibling directory:" -ForegroundColor Yellow
+        Write-Host "  git clone https://github.com/NowakAdmin/SoftwareSigner.git ..\SoftwareSigner" -ForegroundColor Gray
+        Pop-Location
+        exit 1
+    }
+
+    $CertPath = "$SoftwareSignerPath\certs\nowakadmin-codesigning.pfx"
     
     if (!(Test-Path $CertPath)) {
         Write-Host "  ✗ Certificate not found: $CertPath" -ForegroundColor Red
-        Write-Host "  Run: .\scripts\create-signing-cert.ps1" -ForegroundColor Yellow
+        Write-Host "  Create certificate first:" -ForegroundColor Yellow
+        Write-Host "  ..\SoftwareSigner\scripts\create-certificate.ps1" -ForegroundColor Gray
         Pop-Location
         exit 1
     }
 
     Write-Host "  Enter certificate password:" -ForegroundColor Yellow
-    $password = Read-Host -AsSecureString
+    $CertPassword = Read-Host -AsSecureString
 
-    # Convert to plain text
-    $ptr = [System.Runtime.InteropServices.Marshal]::SecureStringToCoTaskMemUnicode($password)
-    $passwordPlain = [System.Runtime.InteropServices.Marshal]::PtrToStringUni($ptr)
-
-    # Find signtool
-    $signtoolPaths = @(
-        "C:\Program Files (x86)\Windows Kits\10\bin\x64\signtool.exe",
-        "C:\Program Files\Windows Kits\10\bin\x64\signtool.exe",
-        "C:\Program Files (x86)\Windows Kits\11\bin\x64\signtool.exe",
-        "C:\Program Files\Windows Kits\11\bin\x64\signtool.exe"
-    )
-
-    $signtoolPath = $signtoolPaths | Where-Object { Test-Path $_ } | Select-Object -First 1
-
-    if (!$signtoolPath) {
-        Write-Host "  ✗ signtool.exe not found" -ForegroundColor Red
-        Write-Host "  Download Windows SDK: https://developer.microsoft.com/windows/downloads/windows-sdk/" -ForegroundColor Yellow
-        Pop-Location
-        exit 1
-    }
-
+    # Call SoftwareSigner
     try {
-        & $signtoolPath sign `
-            /f "$CertPath" `
-            /p "$passwordPlain" `
-            /t "http://timestamp.digicert.com" `
-            /d "Bizanti Agent - Device Configuration Manager" `
-            /du "https://nowakadministrators.pl" `
-            "$OutputFile" | Out-Null
+        & "$SoftwareSignerPath\scripts\sign-build.ps1" `
+            -ConfigFile "signing-config.json" `
+            -CertificatePath $CertPath `
+            -CertPassword $CertPassword `
+            -ExecutablePath $OutputFile
 
-        if ($LASTEXITCODE -eq 0) {
-            Write-Host "  ✓ Signed successfully" -ForegroundColor Green
-            
-            # Verify
-            & $signtoolPath verify /pa "$OutputFile" | Out-Null
-            
-            if ($LASTEXITCODE -eq 0) {
-                Write-Host "  ✓ Signature verified" -ForegroundColor Green
-            } else {
-                Write-Host "  ⚠ Signature verification failed" -ForegroundColor Yellow
-            }
-        } else {
+        if ($LASTEXITCODE -ne 0) {
             Write-Host "  ✗ Signing failed" -ForegroundColor Red
             Pop-Location
             exit 1
         }
-    } finally {
-        if ($passwordPlain) {
-            $passwordPlain = $null
-            [System.GC]::Collect()
-        }
+    } catch {
+        Write-Host "  ✗ Error calling SoftwareSigner: $_" -ForegroundColor Red
+        Pop-Location
+        exit 1
     }
 }
 

@@ -2,17 +2,17 @@ package update
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
-	"os/exec"
-	"encoding/json"
 )
 
 type ReleaseAsset struct {

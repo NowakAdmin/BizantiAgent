@@ -1,0 +1,9 @@
+{
+  "signingEnabled": true,
+  "projectName": "BizantiAgent",
+  "description": "Device Configuration Manager for Bizanti ERP",
+  "companyUrl": "https://nowakadministrators.pl",
+  "timestampServer": "http://timestamp.digicert.com",
+  "executablePath": "BizantiAgent.exe",
+  "version": "0.1.3"
+}

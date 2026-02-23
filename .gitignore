@@ -7,8 +7,7 @@ tmp/
 *.exe
 *.log
 
-# Certificate files (SECURITY: never commit private keys!)
-certs/
-*.pfx
-*.p12
-*.key
+# Certificate management moved to SoftwareSigner package
+# (see: https://github.com/NowakAdmin/SoftwareSigner)
+scripts/create-signing-cert.ps1.bak
+scripts/sign-executable.ps1.bak
