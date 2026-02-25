@@ -2,6 +2,7 @@ package tray
 
 import (
 	"context"
+	_ "embed"
 	"fmt"
 	"log"
 	"os"
@@ -22,6 +23,9 @@ import (
 )
 
 const appName = "BizantiAgent"
+
+//go:embed app.ico
+var embeddedTrayIcon []byte
 
 type App struct {
 	cfg    *config.Config
@@ -314,6 +318,10 @@ func ensureLogFile(logPath string) error {
 
 // loadIcon wczytuje ikonę bizanti logo z dysku i zwraca raw bytes dla systray
 func loadIcon() []byte {
+	if len(embeddedTrayIcon) > 0 {
+		return embeddedTrayIcon
+	}
+
 	// Spróbuj wczytać z assets w executable directory
 	exePath, err := os.Executable()
 	if err != nil {

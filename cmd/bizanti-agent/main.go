@@ -112,7 +112,7 @@ func runTray() {
 				showInfoMessage("Bizanti Agent", fmt.Sprintf("Błąd przenoszenia: %v", err))
 			} else {
 				showInfoMessage("Bizanti Agent", "Instalacja zakończona. Agent uruchomi się ponownie.")
-				setup.RestartApp("")
+				setup.RestartApp(filepath.Join(config.Dir(), "BizantiAgent.exe"))
 				return
 			}
 		}
@@ -232,16 +232,16 @@ var instanceMutexHandle syscall.Handle
 func acquireSingleInstance() bool {
 	createMutex := syscall.NewLazyDLL("kernel32.dll").NewProc("CreateMutexW")
 	getLastError := syscall.NewLazyDLL("kernel32.dll").NewProc("GetLastError")
+	closeHandle := syscall.NewLazyDLL("kernel32.dll").NewProc("CloseHandle")
 
-	namePtr, _ := syscall.UTF16PtrFromString("Global\\BizantiAgent")
+	namePtr, _ := syscall.UTF16PtrFromString("Local\\BizantiAgent")
 	handle, _, _ := createMutex.Call(0, 1, uintptr(unsafe.Pointer(namePtr)))
 	if handle == 0 {
-		return true
+		return false
 	}
 
 	errCode, _, _ := getLastError.Call()
 	if errCode == errorAlreadyExists {
-		closeHandle := syscall.NewLazyDLL("kernel32.dll").NewProc("CloseHandle")
 		closeHandle.Call(handle)
 		return false
 	}

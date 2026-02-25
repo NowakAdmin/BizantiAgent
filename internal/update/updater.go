@@ -1,6 +1,7 @@
 package update
 
 import (
+	"archive/zip"
 	"context"
 	"encoding/json"
 	"errors"
@@ -69,6 +70,9 @@ func GetLatestRelease(ctx context.Context, repo string) (LatestReleaseResponse, 
 func DownloadLatestWindowsAsset(ctx context.Context, repo string) (string, LatestReleaseResponse, error) {
 	release, err := GetLatestRelease(ctx, repo)
 	if err != nil {
+		if strings.Contains(err.Error(), "brak opublikowanego release") {
+			return downloadFromTaggedRepoAssets(ctx, repo)
+		}
 		return "", LatestReleaseResponse{}, err
 	}
 
@@ -129,6 +133,146 @@ func DownloadLatestWindowsAsset(ctx context.Context, repo string) (string, Lates
 	}
 
 	return tmpFile.Name(), release, nil
+}
+
+func downloadFromTaggedRepoAssets(ctx context.Context, repo string) (string, LatestReleaseResponse, error) {
+	latestTag, err := getLatestTag(ctx, repo)
+	if err != nil {
+		return "", LatestReleaseResponse{}, err
+	}
+
+	normalized := normalizeVersion(latestTag)
+
+	zipURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/releases/bizanti-agent-v%s-win64.zip", repo, latestTag, normalized)
+	zipPath, err := downloadToTemp(ctx, zipURL, "bizanti-agent-release-*.zip")
+	if err == nil {
+		exePath, extractErr := extractExeFromZip(zipPath)
+		_ = os.Remove(zipPath)
+		if extractErr == nil {
+			return exePath, LatestReleaseResponse{TagName: latestTag}, nil
+		}
+	}
+
+	exeURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/BizantiAgent.exe", repo, latestTag)
+	exePath, exeErr := downloadToTemp(ctx, exeURL, "BizantiAgent-*.exe")
+	if exeErr != nil {
+		return "", LatestReleaseResponse{}, fmt.Errorf("brak pliku aktualizacji dla tagu %s", latestTag)
+	}
+
+	return exePath, LatestReleaseResponse{TagName: latestTag}, nil
+}
+
+func getLatestTag(ctx context.Context, repo string) (string, error) {
+	url := fmt.Sprintf("https://api.github.com/repos/%s/tags", repo)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return "", err
+	}
+	request.Header.Set("Accept", "application/vnd.github+json")
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	response, err := client.Do(request)
+	if err != nil {
+		return "", err
+	}
+	defer func() {
+		_ = response.Body.Close()
+	}()
+
+	if response.StatusCode >= 300 {
+		return "", fmt.Errorf("github api zwróciło status: %d", response.StatusCode)
+	}
+
+	var tags []struct {
+		Name string `json:"name"`
+	}
+	if err = json.NewDecoder(response.Body).Decode(&tags); err != nil {
+		return "", err
+	}
+
+	if len(tags) == 0 {
+		return "", fmt.Errorf("brak tagów w repozytorium")
+	}
+
+	return tags[0].Name, nil
+}
+
+func downloadToTemp(ctx context.Context, url, pattern string) (string, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return "", err
+	}
+
+	client := &http.Client{Timeout: 60 * time.Second}
+	response, err := client.Do(request)
+	if err != nil {
+		return "", err
+	}
+	defer func() {
+		_ = response.Body.Close()
+	}()
+
+	if response.StatusCode >= 300 {
+		return "", fmt.Errorf("download status %d", response.StatusCode)
+	}
+
+	tmpFile, err := os.CreateTemp(os.TempDir(), pattern)
+	if err != nil {
+		return "", err
+	}
+	defer func() {
+		_ = tmpFile.Close()
+	}()
+
+	if _, err = io.Copy(tmpFile, response.Body); err != nil {
+		return "", err
+	}
+
+	return tmpFile.Name(), nil
+}
+
+func extractExeFromZip(zipPath string) (string, error) {
+	zipReader, err := zip.OpenReader(zipPath)
+	if err != nil {
+		return "", err
+	}
+	defer func() {
+		_ = zipReader.Close()
+	}()
+
+	for _, f := range zipReader.File {
+		if !strings.EqualFold(filepath.Base(f.Name), "BizantiAgent.exe") {
+			continue
+		}
+
+		src, openErr := f.Open()
+		if openErr != nil {
+			return "", openErr
+		}
+
+		tmpExe, createErr := os.CreateTemp(os.TempDir(), "BizantiAgent-*.exe")
+		if createErr != nil {
+			_ = src.Close()
+			return "", createErr
+		}
+
+		_, copyErr := io.Copy(tmpExe, src)
+		_ = src.Close()
+		_ = tmpExe.Close()
+		if copyErr != nil {
+			return "", copyErr
+		}
+
+		return tmpExe.Name(), nil
+	}
+
+	return "", fmt.Errorf("brak BizantiAgent.exe w archiwum")
+}
+
+func normalizeVersion(v string) string {
+	v = strings.TrimSpace(v)
+	v = strings.TrimPrefix(v, "v")
+	return v
 }
 
 func StartSelfUpdate(newBinaryPath string) error {
