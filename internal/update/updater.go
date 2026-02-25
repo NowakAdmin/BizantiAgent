@@ -302,7 +302,7 @@ func StartSelfUpdate(newBinaryPath string) error {
 		return err
 	}
 
-	cmd := exec.Command("cmd.exe", "/D", "/C", scriptPath)
+	cmd := exec.Command("cmd.exe", "/D", "/C", fmt.Sprintf("\"%s\"", scriptPath))
 	cmd.Dir = filepath.Dir(targetPath)
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 
