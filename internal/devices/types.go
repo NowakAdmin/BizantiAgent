@@ -12,6 +12,8 @@ type ScaleConfig struct {
 
 type PrinterConfig struct {
 	Model         string `json:"model"`
+	Transport     string `json:"transport,omitempty"`
+	PrinterName   string `json:"printer_name,omitempty"`
 	Host          string `json:"host"`
 	Port          int    `json:"port,omitempty"`
 	WriteTimeoutS int    `json:"write_timeout_s,omitempty"`
