@@ -48,10 +48,8 @@ func runConfigure() {
 	fs := flag.NewFlagSet("configure", flag.ExitOnError)
 	serverURL := fs.String("server", cfg.ServerURL, "Base URL API Bizanti, np. https://bizanti.pl")
 	wsURL := fs.String("ws", cfg.WebSocketURL, "URL WebSocket agenta, np. wss://bizanti.pl/agent/ws")
-	agentID := fs.String("agent-id", cfg.AgentID, "ID konta agenta")
 	token := fs.String("token", cfg.AgentToken, "Token API agenta")
 	tenantID := fs.String("tenant-id", cfg.TenantID, "Opcjonalny tenant ID")
-	deviceName := fs.String("name", cfg.DeviceName, "Nazwa agenta widoczna w Bizanti")
 	githubRepo := fs.String("github-repo", cfg.Update.GitHubRepo, "Repo do auto-update, np. NowakAdmin/BizantiAgent")
 	checkHours := fs.Int("update-hours", cfg.Update.CheckIntervalHours, "Co ile godzin sprawdzać aktualizacje")
 
@@ -59,10 +57,8 @@ func runConfigure() {
 
 	cfg.ServerURL = *serverURL
 	cfg.WebSocketURL = *wsURL
-	cfg.AgentID = *agentID
 	cfg.AgentToken = *token
 	cfg.TenantID = *tenantID
-	cfg.DeviceName = *deviceName
 	cfg.Update.GitHubRepo = *githubRepo
 	cfg.Update.CheckIntervalHours = *checkHours
 

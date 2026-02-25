@@ -55,6 +55,7 @@ type Agent struct {
 	consecutiveFailures int
 	pausedUntil         time.Time
 	connected           bool
+	serverAgentID       string
 	mu                  sync.Mutex
 }
 
@@ -131,6 +132,20 @@ func (a *Agent) setConnected(connected bool) {
 	defer a.mu.Unlock()
 
 	a.connected = connected
+}
+
+func (a *Agent) setServerAgentID(id string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	a.serverAgentID = strings.TrimSpace(id)
+}
+
+func (a *Agent) getServerAgentID() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	return a.serverAgentID
 }
 
 // isPaused checks if we're currently paused from retrying
@@ -321,6 +336,16 @@ func (a *Agent) heartbeat(ctx context.Context) error {
 		return fmt.Errorf("heartbeat status %d: %s", response.StatusCode, summarizeResponseBody(body))
 	}
 
+	var payload struct {
+		AgentID any `json:"agent_id"`
+	}
+
+	if err = json.NewDecoder(response.Body).Decode(&payload); err == nil {
+		if payload.AgentID != nil {
+			a.setServerAgentID(fmt.Sprintf("%v", payload.AgentID))
+		}
+	}
+
 	a.setConnected(true)
 
 	return nil
@@ -442,8 +467,6 @@ func (a *Agent) newAPIRequest(ctx context.Context, method string, path string, b
 	}
 
 	request.Header.Set("Authorization", "Bearer "+a.cfg.AgentToken)
-	request.Header.Set("X-Agent-ID", a.cfg.AgentID)
-	request.Header.Set("X-Agent-Name", a.cfg.DeviceName)
 
 	return request, nil
 }
@@ -451,8 +474,6 @@ func (a *Agent) newAPIRequest(ctx context.Context, method string, path string, b
 func (a *Agent) runSession(ctx context.Context) error {
 	headers := http.Header{}
 	headers.Set("Authorization", "Bearer "+a.cfg.AgentToken)
-	headers.Set("X-Agent-ID", a.cfg.AgentID)
-	headers.Set("X-Agent-Name", a.cfg.DeviceName)
 	if strings.TrimSpace(a.cfg.TenantID) != "" {
 		headers.Set("X-Tenant-ID", a.cfg.TenantID)
 	}
@@ -474,12 +495,9 @@ func (a *Agent) runSession(ctx context.Context) error {
 
 	if err = conn.WriteJSON(OutgoingMessage{
 		Type:      "auth",
-		AgentID:   a.cfg.AgentID,
+		AgentID:   a.getServerAgentID(),
 		Status:    "online",
 		Timestamp: time.Now().UTC().Format(time.RFC3339),
-		Data: map[string]any{
-			"device_name": a.cfg.DeviceName,
-		},
 	}); err != nil {
 		return err
 	}
@@ -521,7 +539,7 @@ func (a *Agent) runSession(ctx context.Context) error {
 		case <-heartbeatTicker.C:
 			_ = conn.WriteJSON(OutgoingMessage{
 				Type:      "heartbeat",
-				AgentID:   a.cfg.AgentID,
+				AgentID:   a.getServerAgentID(),
 				Timestamp: time.Now().UTC().Format(time.RFC3339),
 				Status:    "online",
 			})
@@ -537,7 +555,7 @@ func (a *Agent) handleIncoming(conn *websocket.Conn, message IncomingMessage) {
 	case messageType == "ping" || commandName == "ping":
 		_ = conn.WriteJSON(OutgoingMessage{
 			Type:      "pong",
-			AgentID:   a.cfg.AgentID,
+			AgentID:   a.getServerAgentID(),
 			Timestamp: time.Now().UTC().Format(time.RFC3339),
 			JobID:     message.JobID,
 		})
@@ -547,7 +565,7 @@ func (a *Agent) handleIncoming(conn *websocket.Conn, message IncomingMessage) {
 		result, err := a.executeCommand(commandName, message.Payload)
 		out := OutgoingMessage{
 			Type:      "command_result",
-			AgentID:   a.cfg.AgentID,
+			AgentID:   a.getServerAgentID(),
 			JobID:     message.JobID,
 			Timestamp: time.Now().UTC().Format(time.RFC3339),
 		}

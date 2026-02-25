@@ -104,8 +104,10 @@ func sendWindowsSpooler(cfg PrinterConfig, content string) error {
 func RenderTemplate(template string, values map[string]string) string {
 	rendered := template
 	for key, value := range values {
-		placeholder := "{{" + key + "}}"
-		rendered = strings.ReplaceAll(rendered, placeholder, value)
+		doubleBracketPlaceholder := "{{" + key + "}}"
+		singleBracketPlaceholder := "{" + key + "}"
+		rendered = strings.ReplaceAll(rendered, doubleBracketPlaceholder, value)
+		rendered = strings.ReplaceAll(rendered, singleBracketPlaceholder, value)
 	}
 
 	return rendered

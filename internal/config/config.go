@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strings"
 )
 
 type UpdateConfig struct {
@@ -17,10 +16,8 @@ type UpdateConfig struct {
 type Config struct {
 	ServerURL        string       `json:"server_url"`
 	WebSocketURL     string       `json:"websocket_url"`
-	AgentID          string       `json:"agent_id"`
 	AgentToken       string       `json:"agent_token"`
 	TenantID         string       `json:"tenant_id,omitempty"`
-	DeviceName       string       `json:"device_name"`
 	HeartbeatSeconds int          `json:"heartbeat_seconds"`
 	Update           UpdateConfig `json:"update"`
 }
@@ -29,10 +26,8 @@ func Default() *Config {
 	return &Config{
 		ServerURL:        "https://bizanti.pl",
 		WebSocketURL:     "wss://bizanti.pl/agent/ws",
-		AgentID:          "",
 		AgentToken:       "",
 		TenantID:         "",
-		DeviceName:       hostNameFallback(),
 		HeartbeatSeconds: 30,
 		Update: UpdateConfig{
 			GitHubRepo:         "NowakAdmin/BizantiAgent",
@@ -111,18 +106,4 @@ func LogDir() string {
 
 func Path() string {
 	return filepath.Join(Dir(), "config.json")
-}
-
-func hostNameFallback() string {
-	host, err := os.Hostname()
-	if err != nil {
-		return "bizanti-agent"
-	}
-
-	clean := strings.TrimSpace(host)
-	if clean == "" {
-		return "bizanti-agent"
-	}
-
-	return clean
 }
