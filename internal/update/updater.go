@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -288,12 +289,22 @@ func StartSelfUpdate(newBinaryPath string) error {
 		return err
 	}
 
-	scriptPath := filepath.Join(os.TempDir(), "bizanti-agent-update.cmd")
+	tmpScript, err := os.CreateTemp(os.TempDir(), "bizanti-agent-update-*.cmd")
+	if err != nil {
+		return err
+	}
+	scriptPath := tmpScript.Name()
+	_ = tmpScript.Close()
+
 	script := fmt.Sprintf("@echo off\r\nset \"TARGET=%s\"\r\nset \"NEW=%s\"\r\n:loop\r\nping 127.0.0.1 -n 2 > nul\r\ndel \"%%TARGET%%\" >nul 2>nul\r\nif exist \"%%TARGET%%\" goto loop\r\nmove /Y \"%%NEW%%\" \"%%TARGET%%\" >nul\r\nstart \"\" \"%%TARGET%%\"\r\ndel \"%%~f0\"\r\n", targetPath, newBinaryPath)
 
 	if err := os.WriteFile(scriptPath, []byte(script), 0o700); err != nil {
 		return err
 	}
 
-	return exec.Command("cmd.exe", "/C", "start", "", scriptPath).Start()
+	cmd := exec.Command("cmd.exe", "/D", "/C", scriptPath)
+	cmd.Dir = filepath.Dir(targetPath)
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+
+	return cmd.Start()
 }

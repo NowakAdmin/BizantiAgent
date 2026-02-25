@@ -54,6 +54,7 @@ type Agent struct {
 	// Retry tracking
 	consecutiveFailures int
 	pausedUntil         time.Time
+	connected           bool
 	mu                  sync.Mutex
 }
 
@@ -94,6 +95,7 @@ func (a *Agent) Stop() {
 
 	a.wg.Wait()
 	a.running.Store(false)
+	a.setConnected(false)
 }
 
 func (a *Agent) IsRunning() bool {
@@ -106,6 +108,7 @@ func (a *Agent) recordFailure() {
 	defer a.mu.Unlock()
 
 	a.consecutiveFailures++
+	a.connected = false
 
 	// After 3 failures, pause for 5 minutes
 	if a.consecutiveFailures >= 3 {
@@ -121,6 +124,13 @@ func (a *Agent) recordSuccess() {
 
 	a.consecutiveFailures = 0
 	a.pausedUntil = time.Time{}
+}
+
+func (a *Agent) setConnected(connected bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	a.connected = connected
 }
 
 // isPaused checks if we're currently paused from retrying
@@ -148,6 +158,9 @@ func (a *Agent) GetStatus() string {
 	if a.running.Load() {
 		if !a.pausedUntil.IsZero() && time.Now().Before(a.pausedUntil) {
 			return fmt.Sprintf("Pauza (próba za %d s)", int(a.pausedUntil.Sub(time.Now()).Seconds()))
+		}
+		if a.connected {
+			return "Połączono"
 		}
 		if a.consecutiveFailures > 0 {
 			return fmt.Sprintf("Łączenie... (próba %d)", a.consecutiveFailures+1)
@@ -249,6 +262,7 @@ func (a *Agent) runHTTPPolling(ctx context.Context, maxDuration time.Duration) e
 	defer heartbeatTicker.Stop()
 
 	if err := a.heartbeat(ctx); err != nil {
+		a.setConnected(false)
 		a.logger.Printf("HTTP heartbeat error: %v", err)
 	}
 
@@ -267,11 +281,13 @@ func (a *Agent) runHTTPPolling(ctx context.Context, maxDuration time.Duration) e
 			return nil
 		case <-heartbeatTicker.C:
 			if err := a.heartbeat(ctx); err != nil {
+				a.setConnected(false)
 				a.logger.Printf("HTTP heartbeat error: %v", err)
 			}
 		case <-pollTicker.C:
 			commands, err := a.pullCommands(ctx)
 			if err != nil {
+				a.setConnected(false)
 				return err
 			}
 
@@ -305,6 +321,8 @@ func (a *Agent) heartbeat(ctx context.Context) error {
 		return fmt.Errorf("heartbeat status %d: %s", response.StatusCode, summarizeResponseBody(body))
 	}
 
+	a.setConnected(true)
+
 	return nil
 }
 
@@ -335,6 +353,8 @@ func (a *Agent) pullCommands(ctx context.Context) ([]IncomingMessage, error) {
 	if !parsed.Success {
 		return nil, fmt.Errorf("pull commands returned success=false")
 	}
+
+	a.setConnected(true)
 
 	return parsed.Data, nil
 }
@@ -446,6 +466,7 @@ func (a *Agent) runSession(ctx context.Context) error {
 		return err
 	}
 	defer func() {
+		a.setConnected(false)
 		_ = conn.Close()
 	}()
 
@@ -462,6 +483,8 @@ func (a *Agent) runSession(ctx context.Context) error {
 	}); err != nil {
 		return err
 	}
+
+	a.setConnected(true)
 
 	heartbeatEvery := time.Duration(a.cfg.HeartbeatSeconds) * time.Second
 	if a.cfg.HeartbeatSeconds <= 0 {
