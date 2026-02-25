@@ -1,15 +1,14 @@
 # BizantiAgent
 
-Lokalny agent dla Bizanti (Windows-first), który utrzymuje połączenie z Bizanti i wykonuje polecenia dla urządzeń w sieci lokalnej:
+Lokalny agent dla Bizanti (Windows-first), który utrzymuje połączenie WebSocket z Bizanti i wykonuje polecenia dla urządzeń w sieci lokalnej:
 
 - Dibal W-025S (odczyt wagi przez TCP lub RS232),
-- GoDEX G500 (druk `raw_tcp`, port 9100),
-- Intermec PM43c (druk `raw_tcp`, najlepiej w trybie ZSim/ZPL),
-- HP OfficeJet i inne drukarki Windows (druk `windows_spooler`).
+- GoDEX G500 (druk raw TCP 9100),
+- Intermec PM43c (druk raw TCP 9100, najlepiej w trybie ZSim/ZPL).
 
 ## Założenia architektury
 
-- Agent inicjuje połączenie wychodzące do Bizanti (WebSocket + fallback HTTP, bez otwierania portów po stronie klienta).
+- Agent inicjuje połączenie wychodzące `WSS` do Bizanti (bez otwierania portów po stronie klienta).
 - Bizanti wysyła komendy typu `weigh_and_print` lub `print_label` przez WebSocket.
 - Agent wykonuje komendę lokalnie i odsyła status `completed/failed` z payloadem wyniku.
 - Szablony etykiet i konfiguracja urządzeń pozostają po stronie Bizanti (minimalna logika lokalna).
@@ -31,8 +30,10 @@ To pozwala uruchomić MVP end-to-end bez stawiania serwera WebSocket.
 bizanti-agent configure \
   --server=https://bizanti.pl \
   --ws=wss://bizanti.pl/agent/ws \
+  --agent-id=agent_123 \
   --token=xxx \
   --tenant-id=tenant_123 \
+  --name=PRODUKCJA-01 \
   --github-repo=NowakAdmin/BizantiAgent
 
 # uruchomienie bez tray (serwisowe/test)
@@ -46,24 +47,6 @@ bizanti-agent
 
 - Konfiguracja: `%ProgramData%/BizantiAgent/config.json`
 - Logi: `%ProgramData%/BizantiAgent/logs/agent.log`
-
-Przykładowy `config.json`:
-
-```json
-{
-  "server_url": "https://bizanti.pl",
-  "websocket_url": "wss://bizanti.pl/agent/ws",
-  "agent_token": "<TOKEN_Z_BIZANTI>",
-  "tenant_id": "tenant_123",
-  "heartbeat_seconds": 30,
-  "update": {
-    "github_repo": "NowakAdmin/BizantiAgent",
-    "check_interval_hours": 6
-  }
-}
-```
-
-Uwaga: `agent_id` oraz `device_name` nie są już wymagane w konfiguracji lokalnej.
 
 ## Autostart (Windows)
 
@@ -120,42 +103,8 @@ Technicznie wpisuje agenta do:
 ## Auto-update
 
 - Agent sprawdza latest release z GitHub API (menu `Sprawdź aktualizacje`).
-- Przy update wykonywany jest automatyczny self-replace binarki i restart procesu.
-- Jeżeli nie ma opublikowanego GitHub Release, agent korzysta z fallbacku opartego o tagi i artefakty repo.
-
-## Status w tray
-
-- `Łączenie...` – agent próbuje zestawić sesję.
-- `Połączono` – heartbeat/polling lub sesja WebSocket zostały poprawnie zestawione.
-- `Pauza (...)` – tymczasowa pauza po wielu błędach.
-
-## Konfiguracja drukarki
-
-### 1) RAW TCP (GoDEX / Intermec / drukarki etykiet)
-
-```json
-{
-  "model": "godex-g500",
-  "transport": "raw_tcp",
-  "host": "192.168.1.120",
-  "port": 9100
-}
-```
-
-### 2) Windows Spooler (HP OfficeJet i inne drukarki systemowe)
-
-```json
-{
-  "model": "hp-officejet-pro-6960",
-  "transport": "windows_spooler",
-  "printer_name": "HP OfficeJet Pro 6960"
-}
-```
-
-## Placeholdery etykiet
-
-- Obsługiwane są oba formaty: `{{key}}` oraz `{key}`.
-- Przykłady: `{{product_name}}`, `{weight_kg}`, `{{product.meta.some_meta_key}}`.
+- MVP otwiera stronę release do instalacji.
+- Następny krok: automatyczny self-replace binarki + restart procesu.
 
 ## Build (Windows)
 
