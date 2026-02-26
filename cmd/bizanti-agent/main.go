@@ -2,13 +2,17 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strconv"
+	"strings"
 	"syscall"
 	"unsafe"
 
@@ -120,11 +124,9 @@ func runTray() {
 	}
 
 	if runtime.GOOS == "windows" {
-		if !acquireSingleInstance() {
-			showInfoMessage("Bizanti Agent", "Agent jest już uruchomiony.")
-			return
+		if err := ensureSingleInstanceByProcessCleanup(); err != nil {
+			fmt.Fprintf(os.Stderr, "Ostrzeżenie: nie udało się wykonać cleanup innych instancji: %v\n", err)
 		}
-		defer releaseSingleInstance()
 	}
 
 	// Dla trybu tray ukryj i odłącz konsolę od razu, żeby nie zostawało puste okno na pasku.
@@ -185,52 +187,93 @@ func buildLogger() (*log.Logger, func(), error) {
 	}, nil
 }
 
-// setConsoleTitle ustawia title okna konsoli na Windows
-func setConsoleTitle(title string) {
-	if runtime.GOOS != "windows" {
-		return
-	}
-	setConsoleTitleFn := syscall.NewLazyDLL("kernel32.dll").NewProc("SetConsoleTitleW")
-	titlePtr, _ := syscall.UTF16PtrFromString(title)
-	setConsoleTitleFn.Call(uintptr(unsafe.Pointer(titlePtr)))
+type processInfo struct {
+	ProcessID      int    `json:"ProcessId"`
+	Name           string `json:"Name"`
+	ExecutablePath string `json:"ExecutablePath"`
 }
 
-const errorAlreadyExists = 183
-
-var instanceMutexHandle syscall.Handle
-
-func acquireSingleInstance() bool {
-	createMutex := syscall.NewLazyDLL("kernel32.dll").NewProc("CreateMutexW")
-	getLastError := syscall.NewLazyDLL("kernel32.dll").NewProc("GetLastError")
-	closeHandle := syscall.NewLazyDLL("kernel32.dll").NewProc("CloseHandle")
-
-	namePtr, _ := syscall.UTF16PtrFromString("Local\\BizantiAgent")
-	handle, _, _ := createMutex.Call(0, 1, uintptr(unsafe.Pointer(namePtr)))
-	if handle == 0 {
-		return false
+func ensureSingleInstanceByProcessCleanup() error {
+	if runtime.GOOS != "windows" {
+		return nil
 	}
 
-	errCode, _, _ := getLastError.Call()
-	if errCode == errorAlreadyExists {
-		closeHandle.Call(handle)
-		return false
+	currentPID := os.Getpid()
+	processes, err := listAgentProcesses()
+	if err != nil {
+		return err
 	}
 
-	instanceMutexHandle = syscall.Handle(handle)
-	return true
+	for _, process := range processes {
+		if process.ProcessID == 0 || process.ProcessID == currentPID {
+			continue
+		}
+
+		otherVersion := detectAgentVersion(process.ExecutablePath)
+		fmt.Fprintf(os.Stderr, "Znaleziono inną instancję agenta (PID %d, wersja %s). Zamykanie...\n", process.ProcessID, otherVersion)
+
+		if terminateErr := terminateProcess(process.ProcessID); terminateErr != nil {
+			fmt.Fprintf(os.Stderr, "Nie udało się zamknąć PID %d: %v\n", process.ProcessID, terminateErr)
+		}
+	}
+
+	return nil
 }
 
-func releaseSingleInstance() {
-	if runtime.GOOS != "windows" {
-		return
-	}
-	if instanceMutexHandle == 0 {
-		return
+func listAgentProcesses() ([]processInfo, error) {
+	script := "$procs = Get-CimInstance Win32_Process | Where-Object { $_.Name -in @('BizantiAgent.exe','bizanti-agent.exe') } | Select-Object ProcessId,Name,ExecutablePath; if ($procs) { $procs | ConvertTo-Json -Compress }"
+	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script)
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, err
 	}
 
-	closeHandle := syscall.NewLazyDLL("kernel32.dll").NewProc("CloseHandle")
-	closeHandle.Call(uintptr(instanceMutexHandle))
-	instanceMutexHandle = 0
+	trimmed := strings.TrimSpace(string(output))
+	if trimmed == "" {
+		return []processInfo{}, nil
+	}
+
+	if strings.HasPrefix(trimmed, "[") {
+		var processes []processInfo
+		if unmarshalErr := json.Unmarshal([]byte(trimmed), &processes); unmarshalErr != nil {
+			return nil, unmarshalErr
+		}
+		return processes, nil
+	}
+
+	var single processInfo
+	if unmarshalErr := json.Unmarshal([]byte(trimmed), &single); unmarshalErr != nil {
+		return nil, unmarshalErr
+	}
+
+	return []processInfo{single}, nil
+}
+
+func detectAgentVersion(executablePath string) string {
+	path := strings.TrimSpace(executablePath)
+	if path == "" {
+		return "unknown"
+	}
+
+	cmd := exec.Command(path, "version")
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	output, err := cmd.Output()
+	if err != nil {
+		return "unknown"
+	}
+
+	versionOutput := strings.TrimSpace(string(output))
+	versionOutput = strings.TrimPrefix(versionOutput, "BizantiAgent ")
+	if versionOutput == "" {
+		return "unknown"
+	}
+
+	return versionOutput
+}
+
+func terminateProcess(pid int) error {
+	cmd := exec.Command("taskkill", "/PID", strconv.Itoa(pid), "/T", "/F")
+	return cmd.Run()
 }
 
 const mbOK = 0x00000000

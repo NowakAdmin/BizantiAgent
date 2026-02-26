@@ -296,7 +296,7 @@ func StartSelfUpdate(newBinaryPath string) error {
 	scriptPath := tmpScript.Name()
 	_ = tmpScript.Close()
 
-	script := fmt.Sprintf("@echo off\r\nset \"TARGET=%s\"\r\nset \"NEW=%s\"\r\n:loop\r\nping 127.0.0.1 -n 2 > nul\r\ndel \"%%TARGET%%\" >nul 2>nul\r\nif exist \"%%TARGET%%\" goto loop\r\nmove /Y \"%%NEW%%\" \"%%TARGET%%\" >nul\r\nstart \"\" \"%%TARGET%%\"\r\ndel \"%%~f0\"\r\n", targetPath, newBinaryPath)
+	script := fmt.Sprintf("@echo off\r\nset \"TARGET=%s\"\r\nset \"NEW=%s\"\r\ntaskkill /F /IM BizantiAgent.exe >nul 2>nul\r\ntaskkill /F /IM bizanti-agent.exe >nul 2>nul\r\n:loop\r\nping 127.0.0.1 -n 2 > nul\r\ndel \"%%TARGET%%\" >nul 2>nul\r\nif exist \"%%TARGET%%\" goto loop\r\nmove /Y \"%%NEW%%\" \"%%TARGET%%\" >nul\r\nstart \"\" \"%%TARGET%%\"\r\ndel \"%%~f0\"\r\n", targetPath, newBinaryPath)
 
 	if err := os.WriteFile(scriptPath, []byte(script), 0o700); err != nil {
 		return err
