@@ -2,6 +2,20 @@
 
 Wszystkie istotne zmiany w projekcie BizantiAgent.
 
+## [v0.1.11] - 2026-02-26
+
+### Fixed
+- Zmieniono strategię single-instance na jednorazowy cleanup procesów przy starcie:
+	- wykrywanie innych instancji,
+	- próba odczytu ich wersji,
+	- zamknięcie innych procesów agenta.
+- Utwardzono aktualizację: skrypt updatera zamyka uruchomione instancje agenta przed podmianą pliku EXE.
+
+## [v0.1.10] - 2026-02-26
+
+### Fixed
+- Usunięto puste okno na pasku zadań w trybie tray (natychmiastowe ukrycie i odłączenie konsoli).
+
 ## [v0.1.9] - 2026-02-25
 
 ### Fixed
