@@ -122,12 +122,27 @@ Technicznie wpisuje agenta do:
 - Agent sprawdza latest release z GitHub API (menu `Sprawdź aktualizacje`).
 - Przy update wykonywany jest automatyczny self-replace binarki i restart procesu.
 - Jeżeli nie ma opublikowanego GitHub Release, agent korzysta z fallbacku opartego o tagi i artefakty repo.
+- Podczas update skrypt zamyka inne instancje agenta przed podmianą EXE.
 
 ## Status w tray
 
 - `Łączenie...` – agent próbuje zestawić sesję.
 - `Połączono` – heartbeat/polling lub sesja WebSocket zostały poprawnie zestawione.
 - `Pauza (...)` – tymczasowa pauza po wielu błędach.
+
+## Diagnostyka (Windows)
+
+Jeżeli chcesz szybko potwierdzić poprawność restartu po aktualizacji:
+
+- Sprawdź wersję pliku w `%ProgramData%\BizantiAgent\BizantiAgent.exe`.
+- Sprawdź log: `%ProgramData%\BizantiAgent\logs\agent.log`.
+- Zweryfikuj, że działa tylko jedna instancja procesu `BizantiAgent.exe`.
+
+Przykład (PowerShell):
+
+```powershell
+Get-Process BizantiAgent -ErrorAction SilentlyContinue
+```
 
 ## Konfiguracja drukarki
 
