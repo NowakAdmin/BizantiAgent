@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"syscall"
-	"time"
 	"unsafe"
 
 	"github.com/NowakAdmin/BizantiAgent/internal/agent"
@@ -128,10 +127,9 @@ func runTray() {
 		defer releaseSingleInstance()
 	}
 
-	// Ustaw title okna konsoli PRZED ukryciem (żeby go było widać na chwilę)
+	// Dla trybu tray ukryj i odłącz konsolę od razu, żeby nie zostawało puste okno na pasku.
 	if runtime.GOOS == "windows" {
-		setConsoleTitle(fmt.Sprintf("Bizanti Agent v%s", version.Version))
-		installConsoleCloseHandler()
+		hideAndDetachConsole()
 	}
 
 	logger, closeFn, err := buildLogger()
@@ -144,51 +142,27 @@ func runTray() {
 	a := agent.New(cfg, logger)
 	t := tray.New(cfg, a, logger)
 
-	// Ukryj okno konsoli PO ustawieniu title (ale już przy starcie)
-	if runtime.GOOS == "windows" {
-		go func() {
-			time.Sleep(100 * time.Millisecond) // Krótkie opóźnienie żeby user zobaczył okno
-			hideConsole()                       // Wtedy ukryj
-		}()
-	}
-
 	t.Run()
 }
 
-// hideConsole ukrywa bieżące okno konsoli na Windows
-func hideConsole() {
+// hideAndDetachConsole ukrywa i odłącza bieżącą konsolę na Windows,
+// dzięki czemu tray działa bez pustego okna na pasku zadań.
+func hideAndDetachConsole() {
 	if runtime.GOOS != "windows" {
 		return
 	}
 
-	getConsoleFn := syscall.NewLazyDLL("kernel32.dll").NewProc("GetConsoleWindow")
+	kernel32 := syscall.NewLazyDLL("kernel32.dll")
+	getConsoleFn := kernel32.NewProc("GetConsoleWindow")
+	freeConsoleFn := kernel32.NewProc("FreeConsole")
 	hwnd, _, _ := getConsoleFn.Call()
 
 	if hwnd != 0 {
 		showWindowFn := syscall.NewLazyDLL("user32.dll").NewProc("ShowWindow")
 		showWindowFn.Call(hwnd, 0) // 0 = SW_HIDE
 	}
-}
 
-const ctrlCloseEvent = 2
-
-var consoleCtrlHandler uintptr
-
-func installConsoleCloseHandler() {
-	if runtime.GOOS != "windows" {
-		return
-	}
-
-	setConsoleCtrlHandler := syscall.NewLazyDLL("kernel32.dll").NewProc("SetConsoleCtrlHandler")
-	consoleCtrlHandler = syscall.NewCallback(func(ctrlType uint32) uintptr {
-		if ctrlType == ctrlCloseEvent {
-			hideConsole()
-			return 1
-		}
-		return 0
-	})
-
-	setConsoleCtrlHandler.Call(consoleCtrlHandler, 1)
+	freeConsoleFn.Call()
 }
 
 func buildLogger() (*log.Logger, func(), error) {
