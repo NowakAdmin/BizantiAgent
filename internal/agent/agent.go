@@ -596,7 +596,7 @@ func (a *Agent) executeCommand(command string, rawPayload json.RawMessage) (map[
 		weight := payload.WeightKg
 		var rawResponse string
 		if weight == nil {
-			value, response, err := devices.ReadWeight(payload.Scale)
+			value, response, err := a.readWeightWithIntermecFallback(payload.Scale, payload.Printer)
 			if err != nil {
 				return nil, err
 			}
@@ -652,7 +652,7 @@ func (a *Agent) executeCommand(command string, rawPayload json.RawMessage) (map[
 			return nil, err
 		}
 
-		weight, response, err := devices.ReadWeight(payload.Scale)
+		weight, response, err := a.readWeightWithIntermecFallback(payload.Scale, payload.Printer)
 		if err != nil {
 			return nil, err
 		}
@@ -664,4 +664,56 @@ func (a *Agent) executeCommand(command string, rawPayload json.RawMessage) (map[
 	default:
 		return nil, fmt.Errorf("nieobsługiwana komenda: %s", command)
 	}
+}
+
+func (a *Agent) readWeightWithIntermecFallback(scale devices.ScaleConfig, printer devices.PrinterConfig) (float64, string, error) {
+	weight, response, err := devices.ReadWeight(scale)
+	if err == nil {
+		return weight, response, nil
+	}
+
+	if !shouldTryIntermecBridge(scale, printer) {
+		return 0, "", err
+	}
+
+	fallbackScale := scale
+	fallbackScale.Transport = "tcp"
+	if strings.TrimSpace(fallbackScale.TCPHost) == "" {
+		fallbackScale.TCPHost = strings.TrimSpace(printer.Host)
+	}
+	if fallbackScale.TCPPort <= 0 {
+		if printer.Port > 0 {
+			fallbackScale.TCPPort = printer.Port
+		} else {
+			fallbackScale.TCPPort = 9100
+		}
+	}
+
+	fallbackWeight, fallbackResponse, fallbackErr := devices.ReadWeight(fallbackScale)
+	if fallbackErr != nil {
+		return 0, "", fmt.Errorf("%w; fallback przez Intermec PM43 (%s:%d) nie powiódł się: %v", err, fallbackScale.TCPHost, fallbackScale.TCPPort, fallbackErr)
+	}
+
+	a.logger.Printf("Odczyt wagi przez fallback Intermec PM43 (%s:%d)", fallbackScale.TCPHost, fallbackScale.TCPPort)
+
+	return fallbackWeight, fallbackResponse, nil
+}
+
+func shouldTryIntermecBridge(scale devices.ScaleConfig, printer devices.PrinterConfig) bool {
+	transport := strings.ToLower(strings.TrimSpace(scale.Transport))
+	if transport != "serial" && transport != "rs232" && transport != "com" {
+		return false
+	}
+
+	model := strings.ToLower(strings.TrimSpace(printer.Model))
+	if model != "" && !strings.Contains(model, "intermec") && !strings.Contains(model, "pm43") {
+		return false
+	}
+
+	printerTransport := strings.ToLower(strings.TrimSpace(printer.Transport))
+	if printerTransport != "" && printerTransport != "raw_tcp" && printerTransport != "tcp" && printerTransport != "network" && printerTransport != "jetdirect" {
+		return false
+	}
+
+	return strings.TrimSpace(printer.Host) != ""
 }

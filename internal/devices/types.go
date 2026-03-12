@@ -1,11 +1,16 @@
 package devices
 
 type ScaleConfig struct {
+	Model          string `json:"model,omitempty"`
 	Transport      string `json:"transport"`
 	TCPHost        string `json:"tcp_host,omitempty"`
 	TCPPort        int    `json:"tcp_port,omitempty"`
 	SerialPort     string `json:"serial_port,omitempty"`
 	BaudRate       int    `json:"baud_rate,omitempty"`
+	DataBits       int    `json:"data_bits,omitempty"`
+	Parity         string `json:"parity,omitempty"`
+	StopBits       int    `json:"stop_bits,omitempty"`
+	FlowControl    string `json:"flow_control,omitempty"`
 	RequestCommand string `json:"request_command,omitempty"`
 	ReadTimeoutMs  int    `json:"read_timeout_ms,omitempty"`
 }

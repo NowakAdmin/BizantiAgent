@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -39,15 +40,22 @@ func readWeightSerial(cfg ScaleConfig, timeout time.Duration) (float64, string, 
 		return 0, "", errors.New("brak serial_port w konfiguracji")
 	}
 
-	baud := cfg.BaudRate
-	if baud <= 0 {
-		baud = 9600
-	}
+	requestedPort := strings.TrimSpace(cfg.SerialPort)
+	availablePorts, portsErr := serial.GetPortsList()
+	resolvedPort := normalizeSerialPortName(requestedPort, availablePorts)
 
-	mode := &serial.Mode{BaudRate: baud}
-	port, err := serial.Open(cfg.SerialPort, mode)
+	mode := buildSerialMode(cfg)
+	port, err := serial.Open(resolvedPort, mode)
 	if err != nil {
-		return 0, "", err
+		if portsErr != nil {
+			return 0, "", fmt.Errorf("nie można otworzyć portu %s: %w (nie udało się pobrać listy portów: %v)", resolvedPort, err, portsErr)
+		}
+
+		if len(availablePorts) == 0 {
+			return 0, "", fmt.Errorf("nie można otworzyć portu %s: %w (brak dostępnych portów szeregowych)", resolvedPort, err)
+		}
+
+		return 0, "", fmt.Errorf("nie można otworzyć portu %s: %w (dostępne porty: %s)", resolvedPort, err, strings.Join(availablePorts, ", "))
 	}
 	defer func() {
 		_ = port.Close()
@@ -72,12 +80,71 @@ func readWeightSerial(cfg ScaleConfig, timeout time.Duration) (float64, string, 
 	return weight, line, nil
 }
 
+func buildSerialMode(cfg ScaleConfig) *serial.Mode {
+	baud := cfg.BaudRate
+	if baud <= 0 {
+		baud = 9600
+	}
+
+	dataBits := cfg.DataBits
+	if dataBits < 5 || dataBits > 8 {
+		dataBits = 8
+	}
+
+	parity := serial.NoParity
+	switch strings.ToLower(strings.TrimSpace(cfg.Parity)) {
+	case "odd", "o":
+		parity = serial.OddParity
+	case "even", "e":
+		parity = serial.EvenParity
+	case "mark", "m":
+		parity = serial.MarkParity
+	case "space", "s":
+		parity = serial.SpaceParity
+	}
+
+	stopBits := serial.OneStopBit
+	switch cfg.StopBits {
+	case 2:
+		stopBits = serial.TwoStopBits
+	}
+
+	return &serial.Mode{
+		BaudRate: baud,
+		DataBits: dataBits,
+		Parity:   parity,
+		StopBits: stopBits,
+	}
+}
+
+func normalizeSerialPortName(requested string, available []string) string {
+	trimmed := strings.TrimSpace(requested)
+	if trimmed == "" {
+		return trimmed
+	}
+
+	for _, candidate := range available {
+		if strings.EqualFold(strings.TrimSpace(candidate), trimmed) {
+			return candidate
+		}
+	}
+
+	if runtime.GOOS == "windows" {
+		upper := strings.ToUpper(trimmed)
+		if strings.HasPrefix(upper, "COM") {
+			return upper
+		}
+	}
+
+	return trimmed
+}
+
 func readWeightTCP(cfg ScaleConfig, timeout time.Duration) (float64, string, error) {
 	if strings.TrimSpace(cfg.TCPHost) == "" || cfg.TCPPort <= 0 {
 		return 0, "", errors.New("brak tcp_host/tcp_port w konfiguracji")
 	}
 
-	addr := fmt.Sprintf("%s:%d", cfg.TCPHost, cfg.TCPPort)
+	addr := net.JoinHostPort(cfg.TCPHost, strconv.Itoa(cfg.TCPPort))
 	conn, err := net.DialTimeout("tcp", addr, timeout)
 	if err != nil {
 		return 0, "", err
