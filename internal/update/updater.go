@@ -15,6 +15,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/NowakAdmin/BizantiAgent/internal/config"
 )
 
 type ReleaseAsset struct {
@@ -289,22 +291,166 @@ func StartSelfUpdate(newBinaryPath string) error {
 		return err
 	}
 
-	tmpScript, err := os.CreateTemp(os.TempDir(), "bizanti-agent-update-*.cmd")
+	stagedBinaryPath, err := stageUpdateBinary(targetPath, newBinaryPath)
+	if err != nil {
+		return fmt.Errorf("nie udało się przygotować pliku aktualizacji: %w", err)
+	}
+
+	updateLogPath := filepath.Join(config.LogDir(), "update.log")
+	if err := os.MkdirAll(filepath.Dir(updateLogPath), 0o755); err != nil {
+		return fmt.Errorf("nie udało się przygotować katalogu logów aktualizacji: %w", err)
+	}
+
+	tmpScript, err := os.CreateTemp(os.TempDir(), "bizanti-agent-update-*.ps1")
 	if err != nil {
 		return err
 	}
 	scriptPath := tmpScript.Name()
 	_ = tmpScript.Close()
 
-	script := fmt.Sprintf("@echo off\r\nset \"TARGET=%s\"\r\nset \"NEW=%s\"\r\ntaskkill /F /IM BizantiAgent.exe >nul 2>nul\r\ntaskkill /F /IM bizanti-agent.exe >nul 2>nul\r\n:loop\r\nping 127.0.0.1 -n 2 > nul\r\ndel \"%%TARGET%%\" >nul 2>nul\r\nif exist \"%%TARGET%%\" goto loop\r\nmove /Y \"%%NEW%%\" \"%%TARGET%%\" >nul\r\nstart \"\" \"%%TARGET%%\"\r\ndel \"%%~f0\"\r\n", targetPath, newBinaryPath)
-
+	script := buildWindowsUpdateScript(targetPath, stagedBinaryPath, newBinaryPath, updateLogPath)
 	if err := os.WriteFile(scriptPath, []byte(script), 0o700); err != nil {
 		return err
 	}
 
-	cmd := exec.Command("cmd.exe", "/D", "/C", fmt.Sprintf("\"%s\"", scriptPath))
+	cmd := exec.Command("powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath)
 	cmd.Dir = filepath.Dir(targetPath)
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 
 	return cmd.Start()
+}
+
+func stageUpdateBinary(targetPath string, newBinaryPath string) (string, error) {
+	targetDir := filepath.Dir(targetPath)
+	stagedBinaryPath := filepath.Join(targetDir, "BizantiAgent.update.exe")
+
+	if err := copyFile(newBinaryPath, stagedBinaryPath); err != nil {
+		return "", err
+	}
+
+	return stagedBinaryPath, nil
+}
+
+func copyFile(sourcePath string, destinationPath string) error {
+	if strings.TrimSpace(sourcePath) == "" || strings.TrimSpace(destinationPath) == "" {
+		return fmt.Errorf("ścieżki źródła i celu nie mogą być puste")
+	}
+
+	sourceFile, err := os.Open(sourcePath)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = sourceFile.Close()
+	}()
+
+	if err := os.MkdirAll(filepath.Dir(destinationPath), 0o755); err != nil {
+		return err
+	}
+
+	if err := os.Remove(destinationPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+
+	destinationFile, err := os.OpenFile(destinationPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
+	if err != nil {
+		return err
+	}
+
+	_, err = io.Copy(destinationFile, sourceFile)
+	closeErr := destinationFile.Close()
+	if err != nil {
+		return err
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+
+	return nil
+}
+
+func buildWindowsUpdateScript(targetPath string, stagedBinaryPath string, downloadedBinaryPath string, updateLogPath string) string {
+	targetPath = escapePowerShellSingleQuoted(targetPath)
+	stagedBinaryPath = escapePowerShellSingleQuoted(stagedBinaryPath)
+	downloadedBinaryPath = escapePowerShellSingleQuoted(downloadedBinaryPath)
+	updateLogPath = escapePowerShellSingleQuoted(updateLogPath)
+
+	return fmt.Sprintf(`$ErrorActionPreference = 'Stop'
+$target = '%s'
+$staged = '%s'
+$downloaded = '%s'
+$logPath = '%s'
+$scriptPath = $MyInvocation.MyCommand.Path
+$backup = Join-Path (Split-Path -Parent $target) 'BizantiAgent.previous.exe'
+$backupLeaf = Split-Path -Leaf $backup
+
+function Write-UpdateLog {
+    param([string]$Message)
+
+    $timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss.fff'
+    Add-Content -Path $logPath -Value "[$timestamp] $Message"
+}
+
+try {
+    New-Item -ItemType Directory -Path (Split-Path -Parent $logPath) -Force | Out-Null
+    Write-UpdateLog "Start self-update. target=$target staged=$staged downloaded=$downloaded"
+
+    Stop-Process -Name 'BizantiAgent' -Force -ErrorAction SilentlyContinue
+    Stop-Process -Name 'bizanti-agent' -Force -ErrorAction SilentlyContinue
+
+    $replaced = $false
+    for ($attempt = 1; $attempt -le 40; $attempt++) {
+        Start-Sleep -Milliseconds 750
+
+        try {
+            if (Test-Path $backup) {
+                Remove-Item $backup -Force -ErrorAction SilentlyContinue
+            }
+
+            if (Test-Path $target) {
+                Rename-Item -Path $target -NewName $backupLeaf -Force
+            }
+
+            Move-Item -Path $staged -Destination $target -Force
+            if (Test-Path $backup) {
+                Remove-Item $backup -Force -ErrorAction SilentlyContinue
+            }
+
+            $replaced = $true
+            Write-UpdateLog "Podmieniono plik EXE w próbie #$attempt."
+            break
+        } catch {
+            if ((-not (Test-Path $target)) -and (Test-Path $backup)) {
+                try {
+                    Move-Item -Path $backup -Destination $target -Force
+                } catch {
+                    Write-UpdateLog "Nie udało się przywrócić poprzedniej wersji: $($_.Exception.Message)"
+                }
+            }
+
+            Write-UpdateLog "Próba #$attempt nieudana: $($_.Exception.Message)"
+        }
+    }
+
+    if (-not $replaced) {
+        throw 'Nie udało się podmienić pliku BizantiAgent.exe po 40 próbach.'
+    }
+
+    if (Test-Path $downloaded) {
+        Remove-Item $downloaded -Force -ErrorAction SilentlyContinue
+    }
+
+    Start-Process -FilePath $target | Out-Null
+    Write-UpdateLog 'Uruchomiono nową wersję agenta.'
+} catch {
+    Write-UpdateLog "BŁĄD AKTUALIZACJI: $($_.Exception.Message)"
+} finally {
+    Start-Sleep -Milliseconds 500
+    Remove-Item $scriptPath -Force -ErrorAction SilentlyContinue
+}
+`, targetPath, stagedBinaryPath, downloadedBinaryPath, updateLogPath)
+}
+
+func escapePowerShellSingleQuoted(value string) string {
+	return strings.ReplaceAll(value, "'", "''")
 }

@@ -2,6 +2,16 @@
 
 Wszystkie istotne zmiany w projekcie BizantiAgent.
 
+## [v0.1.14] - 2026-03-12
+
+### Fixed
+- Naprawiono self-update z wersji `v0.1.11+` przez staging nowej binarki bezpośrednio w katalogu docelowym przed restartem procesu.
+- Zastąpiono prosty skrypt `.cmd` bardziej odpornym flow PowerShell z retry, backupem poprzedniego EXE i logiem aktualizacji w `%ProgramData%/BizantiAgent/logs/update.log`.
+- Dodano testy dla generowania skryptu aktualizacji i kopiowania pliku stagingowego.
+
+### Release
+- Wydanie zawiera podpisane artefakty `BizantiAgent.exe` oraz `bizanti-agent-v0.1.14-win64.zip` w GitHub Release.
+
 ## [v0.1.11] - 2026-02-26
 
 ### Fixed
