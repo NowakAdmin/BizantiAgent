@@ -8,9 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"net"
 	"net/http"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -59,6 +57,12 @@ type Agent struct {
 	connected           bool
 	serverAgentID       string
 	mu                  sync.Mutex
+
+	// Persistent Dibal TCP server managers (keyed by "bindHost:rxPort").
+	// Dibal scales (with Lantronix ETS-1) hold ONE permanent TCP connection
+	// to the PC; a per-job listener would always time out.
+	dibalMu      sync.Mutex
+	dibalManagers map[string]*devices.DibalManager
 }
 
 func New(cfg *config.Config, logger *log.Logger) *Agent {
@@ -99,10 +103,62 @@ func (a *Agent) Stop() {
 	a.wg.Wait()
 	a.running.Store(false)
 	a.setConnected(false)
+
+	// Close all persistent Dibal managers.
+	a.dibalMu.Lock()
+	for key, mgr := range a.dibalManagers {
+		mgr.Close()
+		delete(a.dibalManagers, key)
+	}
+	a.dibalMu.Unlock()
 }
 
 func (a *Agent) IsRunning() bool {
 	return a.running.Load()
+}
+
+// getOrCreateDibalManager returns the DibalManager for the given ports,
+// creating and starting one if it does not exist yet.
+// The manager runs background goroutines that accept persistent TCP connections
+// from the Dibal scale's Lantronix adapter.
+func (a *Agent) getOrCreateDibalManager(bindHost string, rxPort, txPort int, addr byte) *devices.DibalManager {
+	if bindHost == "" {
+		bindHost = "0.0.0.0"
+	}
+	if rxPort <= 0 {
+		rxPort = 3000
+	}
+	if txPort <= 0 {
+		txPort = 3001
+	}
+	if addr == 0 {
+		addr = devices.DibalDefaultAddr
+	}
+
+	key := fmt.Sprintf("%s:%d", bindHost, rxPort)
+
+	a.dibalMu.Lock()
+	defer a.dibalMu.Unlock()
+
+	if a.dibalManagers == nil {
+		a.dibalManagers = make(map[string]*devices.DibalManager)
+	}
+
+	if mgr, ok := a.dibalManagers[key]; ok {
+		return mgr
+	}
+
+	mgr := devices.NewDibalManager(devices.DibalManagerConfig{
+		BindHost: bindHost,
+		RXPort:   rxPort,
+		TXPort:   txPort,
+		Addr:     addr,
+		Logger:   a.logger,
+	})
+
+	a.dibalManagers[key] = mgr
+	a.logger.Printf("DibalManager uruchomiony: RX :%d  TX :%d  addr=0x%02X", rxPort, txPort, addr)
+	return mgr
 }
 
 // recordFailure increments failure counter and sets pause if threshold reached
@@ -640,6 +696,34 @@ func (a *Agent) executeCommand(command string, rawPayload json.RawMessage) (map[
 		}
 
 		rendered := devices.RenderTemplate(payload.Template, replace)
+
+		// For Dibal direct transport, use the persistent DibalManager instead
+		// of the per-job listener inside devices.SendToPrinter.
+		printerTransport := strings.ToLower(strings.TrimSpace(payload.Printer.Transport))
+		if printerTransport == "dibal_direct" || printerTransport == "dibal" ||
+			printerTransport == "dibal_tcp_server" || printerTransport == "dibal_server" {
+
+			rxPort := payload.Printer.DibalRXPort
+			if rxPort <= 0 {
+				rxPort = 3000
+			}
+			txPort := 0 // TX port not needed for print-only; manager defaults to 3001
+			if payload.Scale.TXPort > 0 {
+				txPort = payload.Scale.TXPort
+			}
+			mgr := a.getOrCreateDibalManager(payload.Printer.DibalBindHost, rxPort, txPort, payload.Printer.DibalAddr)
+
+			writeTimeout := 8 * time.Second
+			if payload.Printer.WriteTimeoutS > 0 {
+				writeTimeout = time.Duration(payload.Printer.WriteTimeoutS) * time.Second
+			}
+
+			if err := devices.SendDibalContentPersistent(mgr, rendered, writeTimeout); err != nil {
+				return nil, err
+			}
+			return map[string]any{"printer": payload.Printer.Model}, nil
+		}
+
 		if err := devices.SendToPrinter(payload.Printer, rendered); err != nil {
 			return nil, err
 		}
@@ -667,53 +751,30 @@ func (a *Agent) executeCommand(command string, rawPayload json.RawMessage) (map[
 	case "program_dibal_plu":
 		// Programs a PLU record directly into a Dibal K-series scale via TCP.
 		// Does NOT require Windows Spooler or any Windows scale driver.
-		// The scale's Lantronix adapter must be configured to connect to this PC.
+		// Uses the persistent DibalManager — scale connects once via Lantronix.
 		var payload devices.DibalProgramPayload
 		if err := json.Unmarshal(rawPayload, &payload); err != nil {
 			return nil, err
 		}
 
-		bindHost := strings.TrimSpace(payload.Scale.BindHost)
-		if bindHost == "" {
-			bindHost = "0.0.0.0"
-		}
 		rxPort := payload.Scale.RXPort
 		if rxPort <= 0 {
 			rxPort = 3000
+		}
+		txPort := payload.Scale.TXPort
+		if txPort <= 0 {
+			txPort = 3001
 		}
 		timeout := 5 * time.Second
 		if payload.Scale.ReadTimeoutMs > 0 {
 			timeout = time.Duration(payload.Scale.ReadTimeoutMs) * time.Millisecond
 		}
 
-		rxAddr := net.JoinHostPort(bindHost, strconv.Itoa(rxPort))
-		listener, err := net.Listen("tcp", rxAddr)
-		if err != nil {
-			return nil, fmt.Errorf("nie można uruchomić nasłuchu Dibal RX na %s: %w", rxAddr, err)
-		}
-		defer func() {
-			_ = listener.Close()
-		}()
-		if tcpL, ok := listener.(*net.TCPListener); ok {
-			_ = tcpL.SetDeadline(time.Now().Add(timeout))
-		}
+		mgr := a.getOrCreateDibalManager(payload.Scale.BindHost, rxPort, txPort, payload.Scale.DibalAddr)
 
-		a.logger.Printf("program_dibal_plu: nasłuch na %s, PLU=%s '%s'", rxAddr, payload.PLU.Code, payload.PLU.Name)
+		a.logger.Printf("program_dibal_plu: PLU=%s '%s'", payload.PLU.Code, payload.PLU.Name)
 
-		conn, err := listener.Accept()
-		if err != nil {
-			return nil, fmt.Errorf("brak połączenia od wagi Dibal (RX %s): %w", rxAddr, err)
-		}
-		defer func() {
-			_ = conn.Close()
-		}()
-
-		addr := devices.DibalDefaultAddr
-		if payload.Scale.DibalAddr != 0 {
-			addr = payload.Scale.DibalAddr
-		}
-
-		if err = devices.SendDibalPLU(conn, addr, payload.PLU, timeout); err != nil {
+		if err := devices.SendDibalPLUPersistent(mgr, payload.PLU, timeout); err != nil {
 			return nil, fmt.Errorf("błąd programowania PLU Dibal: %w", err)
 		}
 
