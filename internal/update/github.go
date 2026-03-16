@@ -17,6 +17,10 @@ type LatestRelease struct {
 	Body    string `json:"body"`
 }
 
+type githubTag struct {
+	Name string `json:"name"`
+}
+
 type Result struct {
 	HasUpdate bool
 	Version   string
@@ -33,13 +37,13 @@ func CheckGitHubRelease(ctx context.Context, repo string) (Result, error) {
 	// Spróbuj releases/latest (published releases)
 	url := fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", repo)
 	result, err := checkReleaseURL(ctx, url)
-	
+
 	// Jeśli nie ma published release (404), spróbuj tags
 	if err != nil && strings.Contains(err.Error(), "status: 404") {
 		url = fmt.Sprintf("https://api.github.com/repos/%s/tags", repo)
 		return checkTagsURL(ctx, url)
 	}
-	
+
 	return result, err
 }
 
@@ -101,9 +105,7 @@ func checkTagsURL(ctx context.Context, url string) (Result, error) {
 		return Result{}, fmt.Errorf("github api zwróciło status: %d", response.StatusCode)
 	}
 
-	var tags []struct {
-		Name string `json:"name"`
-	}
+	var tags []githubTag
 	if err = json.NewDecoder(response.Body).Decode(&tags); err != nil {
 		return Result{}, err
 	}
@@ -112,8 +114,8 @@ func checkTagsURL(ctx context.Context, url string) (Result, error) {
 		return Result{}, fmt.Errorf("brak wersji w repozytorium")
 	}
 
-	// Pobierz pierwszy (najnowszy) tag
-	latest := normalize(tags[0].Name)
+	latestTagName := pickLatestTagName(tags)
+	latest := normalize(latestTagName)
 	current := normalize(version.Version)
 
 	hasUpdate := isNewerVersion(latest, current)
@@ -121,9 +123,40 @@ func checkTagsURL(ctx context.Context, url string) (Result, error) {
 	return Result{
 		HasUpdate: hasUpdate,
 		Version:   latest,
-		URL:       fmt.Sprintf("https://github.com/%s/releases/tag/%s", extractRepo(url), tags[0].Name),
+		URL:       fmt.Sprintf("https://github.com/%s/releases/tag/%s", extractRepo(url), latestTagName),
 		Notes:     "",
 	}, nil
+}
+
+func pickLatestTagName(tags []githubTag) string {
+	latestTagName := tags[0].Name
+	latestVersion := parseVersion(normalize(tags[0].Name))
+
+	for i := 1; i < len(tags); i++ {
+		candidateName := tags[i].Name
+		candidateVersion := parseVersion(normalize(candidateName))
+
+		if compareVersion(candidateVersion, latestVersion) > 0 {
+			latestTagName = candidateName
+			latestVersion = candidateVersion
+		}
+	}
+
+	return latestTagName
+}
+
+func compareVersion(left [3]int, right [3]int) int {
+	for i := 0; i < 3; i++ {
+		if left[i] > right[i] {
+			return 1
+		}
+
+		if left[i] < right[i] {
+			return -1
+		}
+	}
+
+	return 0
 }
 
 func extractRepo(url string) string {

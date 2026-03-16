@@ -186,9 +186,7 @@ func getLatestTag(ctx context.Context, repo string) (string, error) {
 		return "", fmt.Errorf("github api zwróciło status: %d", response.StatusCode)
 	}
 
-	var tags []struct {
-		Name string `json:"name"`
-	}
+	var tags []githubTag
 	if err = json.NewDecoder(response.Body).Decode(&tags); err != nil {
 		return "", err
 	}
@@ -197,7 +195,7 @@ func getLatestTag(ctx context.Context, repo string) (string, error) {
 		return "", fmt.Errorf("brak tagów w repozytorium")
 	}
 
-	return tags[0].Name, nil
+	return pickLatestTagName(tags), nil
 }
 
 func downloadToTemp(ctx context.Context, url, pattern string) (string, error) {

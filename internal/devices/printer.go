@@ -19,12 +19,34 @@ func SendToPrinter(cfg PrinterConfig, content string) error {
 
 	switch transport {
 	case "raw_tcp", "tcp", "network", "jetdirect":
-		return sendRawTCP(cfg, content)
+		err := sendRawTCP(cfg, content)
+		if err == nil {
+			return nil
+		}
+
+		if canUseWindowsSpoolerFallback(cfg) {
+			fallbackErr := sendWindowsSpooler(cfg, content)
+			if fallbackErr == nil {
+				return nil
+			}
+
+			return fmt.Errorf("raw_tcp błąd: %v; fallback windows_spooler błąd: %v", err, fallbackErr)
+		}
+
+		return err
 	case "windows", "windows_spooler", "spooler", "windows_printer":
 		return sendWindowsSpooler(cfg, content)
 	default:
 		return fmt.Errorf("nieobsługiwany transport drukarki: %s", transport)
 	}
+}
+
+func canUseWindowsSpoolerFallback(cfg PrinterConfig) bool {
+	if runtime.GOOS != "windows" {
+		return false
+	}
+
+	return strings.TrimSpace(cfg.PrinterName) != ""
 }
 
 func sendRawTCP(cfg PrinterConfig, content string) error {
