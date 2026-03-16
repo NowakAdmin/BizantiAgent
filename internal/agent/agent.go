@@ -667,9 +667,41 @@ func (a *Agent) executeCommand(command string, rawPayload json.RawMessage) (map[
 }
 
 func (a *Agent) readWeightWithIntermecFallback(scale devices.ScaleConfig, printer devices.PrinterConfig) (float64, string, error) {
+	transport := strings.ToLower(strings.TrimSpace(scale.Transport))
+	if transport == "tcp_server" || transport == "server_tcp" || transport == "dibal_tcp_server" || transport == "dibal_server" {
+		bindHost := strings.TrimSpace(scale.BindHost)
+		if bindHost == "" {
+			bindHost = "0.0.0.0"
+		}
+
+		txPort := scale.TXPort
+		if txPort <= 0 {
+			if scale.TCPPort > 0 {
+				txPort = scale.TCPPort
+			} else {
+				txPort = 3001
+			}
+		}
+
+		rxPort := scale.RXPort
+		if rxPort <= 0 {
+			rxPort = 3000
+		}
+
+		a.logger.Printf("Tryb Dibal TCP server: nasłuch TX=%s:%d RX=%s:%d request=%t", bindHost, txPort, bindHost, rxPort, strings.TrimSpace(scale.RequestCommand) != "")
+	}
+
 	weight, response, err := devices.ReadWeight(scale)
 	if err == nil {
+		if transport == "tcp_server" || transport == "server_tcp" || transport == "dibal_tcp_server" || transport == "dibal_server" {
+			a.logger.Printf("Dibal TCP server: odebrano odczyt wagi: %s", response)
+		}
+
 		return weight, response, nil
+	}
+
+	if transport == "tcp_server" || transport == "server_tcp" || transport == "dibal_tcp_server" || transport == "dibal_server" {
+		a.logger.Printf("Dibal TCP server: błąd odczytu: %v", err)
 	}
 
 	if !shouldTryIntermecBridge(scale, printer) {

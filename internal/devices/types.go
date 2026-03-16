@@ -5,6 +5,9 @@ type ScaleConfig struct {
 	Transport      string `json:"transport"`
 	TCPHost        string `json:"tcp_host,omitempty"`
 	TCPPort        int    `json:"tcp_port,omitempty"`
+	BindHost       string `json:"bind_host,omitempty"`
+	RXPort         int    `json:"rx_port,omitempty"`
+	TXPort         int    `json:"tx_port,omitempty"`
 	SerialPort     string `json:"serial_port,omitempty"`
 	BaudRate       int    `json:"baud_rate,omitempty"`
 	DataBits       int    `json:"data_bits,omitempty"`
