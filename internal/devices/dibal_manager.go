@@ -292,6 +292,36 @@ func (m *DibalManager) IsTXConnected() bool {
 	return m.txConn != nil
 }
 
+// WaitForRXConnected waits up to timeout for an RX connection from the scale.
+func (m *DibalManager) WaitForRXConnected(timeout time.Duration) bool {
+	if timeout <= 0 {
+		timeout = 8 * time.Second
+	}
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if m.IsRXConnected() {
+			return true
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	return m.IsRXConnected()
+}
+
+// WaitForTXConnected waits up to timeout for a TX connection from the scale.
+func (m *DibalManager) WaitForTXConnected(timeout time.Duration) bool {
+	if timeout <= 0 {
+		timeout = 8 * time.Second
+	}
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if m.IsTXConnected() {
+			return true
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	return m.IsTXConnected()
+}
+
 // SendDibalContentPersistent calls manager.SendLines with newline-split content.
 func SendDibalContentPersistent(manager *DibalManager, content string, timeout time.Duration) error {
 	if manager == nil {

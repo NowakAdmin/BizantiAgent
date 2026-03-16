@@ -13,13 +13,23 @@ type UpdateConfig struct {
 	CheckIntervalHours int    `json:"check_interval_hours"`
 }
 
+type DibalServerConfig struct {
+	Name     string `json:"name,omitempty"`
+	BindHost string `json:"bind_host,omitempty"`
+	RXPort   int    `json:"rx_port,omitempty"`
+	TXPort   int    `json:"tx_port,omitempty"`
+	Addr     byte   `json:"addr,omitempty"`
+	Enabled  *bool  `json:"enabled,omitempty"`
+}
+
 type Config struct {
-	ServerURL        string       `json:"server_url"`
-	WebSocketURL     string       `json:"websocket_url"`
-	AgentToken       string       `json:"agent_token"`
-	TenantID         string       `json:"tenant_id,omitempty"`
-	HeartbeatSeconds int          `json:"heartbeat_seconds"`
-	Update           UpdateConfig `json:"update"`
+	ServerURL        string              `json:"server_url"`
+	WebSocketURL     string              `json:"websocket_url"`
+	AgentToken       string              `json:"agent_token"`
+	TenantID         string              `json:"tenant_id,omitempty"`
+	HeartbeatSeconds int                 `json:"heartbeat_seconds"`
+	Update           UpdateConfig        `json:"update"`
+	DibalServers     []DibalServerConfig `json:"dibal_servers,omitempty"`
 }
 
 func Default() *Config {
@@ -65,6 +75,21 @@ func Load() (*Config, error) {
 
 	if cfg.Update.CheckIntervalHours <= 0 {
 		cfg.Update.CheckIntervalHours = 6
+	}
+
+	for i := range cfg.DibalServers {
+		if cfg.DibalServers[i].BindHost == "" {
+			cfg.DibalServers[i].BindHost = "0.0.0.0"
+		}
+		if cfg.DibalServers[i].RXPort <= 0 {
+			cfg.DibalServers[i].RXPort = 3000
+		}
+		if cfg.DibalServers[i].TXPort <= 0 {
+			cfg.DibalServers[i].TXPort = 3001
+		}
+		if cfg.DibalServers[i].Addr == 0 {
+			cfg.DibalServers[i].Addr = 1
+		}
 	}
 
 	return cfg, nil

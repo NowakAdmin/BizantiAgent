@@ -61,7 +61,7 @@ type Agent struct {
 	// Persistent Dibal TCP server managers (keyed by "bindHost:rxPort").
 	// Dibal scales (with Lantronix ETS-1) hold ONE permanent TCP connection
 	// to the PC; a per-job listener would always time out.
-	dibalMu      sync.Mutex
+	dibalMu       sync.Mutex
 	dibalManagers map[string]*devices.DibalManager
 }
 
@@ -80,6 +80,22 @@ func (a *Agent) Start(parent context.Context) error {
 
 	ctx, cancel := context.WithCancel(parent)
 	a.cancel = cancel
+
+	// Pre-start persistent Dibal listeners from local config so Lantronix
+	// devices can connect immediately after agent startup.
+	for _, server := range a.cfg.DibalServers {
+		if server.Enabled != nil && !*server.Enabled {
+			continue
+		}
+		mgr := a.getOrCreateDibalManager(server.BindHost, server.RXPort, server.TXPort, server.Addr)
+		if mgr != nil {
+			name := strings.TrimSpace(server.Name)
+			if name == "" {
+				name = fmt.Sprintf("%s:%d", server.BindHost, server.RXPort)
+			}
+			a.logger.Printf("DibalManager prestart: %s", name)
+		}
+	}
 
 	a.wg.Add(1)
 	go func() {
@@ -702,6 +718,9 @@ func (a *Agent) executeCommand(command string, rawPayload json.RawMessage) (map[
 		printerTransport := strings.ToLower(strings.TrimSpace(payload.Printer.Transport))
 		if printerTransport == "dibal_direct" || printerTransport == "dibal" ||
 			printerTransport == "dibal_tcp_server" || printerTransport == "dibal_server" {
+			if strings.Contains(rendered, "^XA") || strings.Contains(rendered, "^XZ") {
+				return nil, fmt.Errorf("szablon ZPL nie jest obsługiwany przez Dibal; użyj linii rejestrów Dibal (np. X1;...)")
+			}
 
 			rxPort := payload.Printer.DibalRXPort
 			if rxPort <= 0 {
@@ -716,6 +735,10 @@ func (a *Agent) executeCommand(command string, rawPayload json.RawMessage) (map[
 			writeTimeout := 8 * time.Second
 			if payload.Printer.WriteTimeoutS > 0 {
 				writeTimeout = time.Duration(payload.Printer.WriteTimeoutS) * time.Second
+			}
+
+			if !mgr.WaitForRXConnected(writeTimeout) {
+				return nil, fmt.Errorf("waga Dibal nie jest połączona na porcie RX %d — sprawdź konfigurację Lantronix (Remote IP = IP tego komputera)", rxPort)
 			}
 
 			if err := devices.SendDibalContentPersistent(mgr, rendered, writeTimeout); err != nil {
@@ -771,6 +794,9 @@ func (a *Agent) executeCommand(command string, rawPayload json.RawMessage) (map[
 		}
 
 		mgr := a.getOrCreateDibalManager(payload.Scale.BindHost, rxPort, txPort, payload.Scale.DibalAddr)
+		if !mgr.WaitForRXConnected(timeout) {
+			return nil, fmt.Errorf("waga Dibal nie jest połączona na porcie RX %d — sprawdź konfigurację Lantronix (Remote IP = IP tego komputera)", rxPort)
+		}
 
 		a.logger.Printf("program_dibal_plu: PLU=%s '%s'", payload.PLU.Code, payload.PLU.Name)
 
@@ -813,6 +839,24 @@ func (a *Agent) readWeightWithIntermecFallback(scale devices.ScaleConfig, printe
 		}
 
 		a.logger.Printf("Tryb Dibal TCP server: nasłuch TX=%s:%d RX=%s:%d request=%t", bindHost, txPort, bindHost, rxPort, strings.TrimSpace(scale.RequestCommand) != "")
+
+		mgr := a.getOrCreateDibalManager(bindHost, rxPort, txPort, scale.DibalAddr)
+		timeout := 5 * time.Second
+		if scale.ReadTimeoutMs > 0 {
+			timeout = time.Duration(scale.ReadTimeoutMs) * time.Millisecond
+		}
+		if !mgr.WaitForTXConnected(timeout) {
+			return 0, "", fmt.Errorf("waga Dibal nie jest połączona na porcie TX %d", txPort)
+		}
+
+		weight, response, err := devices.ReadWeightPersistent(mgr, scale)
+		if err == nil {
+			a.logger.Printf("Dibal TCP server: odebrano odczyt wagi: %s", response)
+			return weight, response, nil
+		}
+
+		a.logger.Printf("Dibal TCP server: błąd odczytu: %v", err)
+		return 0, "", err
 	}
 
 	weight, response, err := devices.ReadWeight(scale)
