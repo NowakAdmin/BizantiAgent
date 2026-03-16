@@ -36,6 +36,13 @@ func SendToPrinter(cfg PrinterConfig, content string) error {
 		return err
 	case "windows", "windows_spooler", "spooler", "windows_printer":
 		return sendWindowsSpooler(cfg, content)
+	case "dibal_direct", "dibal", "dibal_tcp_server", "dibal_server":
+		// Direct Dibal K-series protocol over TCP.
+		// The Lantronix adapter on the scale connects TO the PC (PC = server).
+		// content = newline-separated high-level semicolon-delimited register lines.
+		// KB lock/unlock lines must be included in content (or will be added automatically
+		// if content contains X1/28 lines without KB wrappers).
+		return SendDibalContentOverTCPServer(cfg, content)
 	default:
 		return fmt.Errorf("nieobsługiwany transport drukarki: %s", transport)
 	}

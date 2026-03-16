@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -661,6 +663,67 @@ func (a *Agent) executeCommand(command string, rawPayload json.RawMessage) (map[
 			"weight":       weight,
 			"raw_response": response,
 		}, nil
+
+	case "program_dibal_plu":
+		// Programs a PLU record directly into a Dibal K-series scale via TCP.
+		// Does NOT require Windows Spooler or any Windows scale driver.
+		// The scale's Lantronix adapter must be configured to connect to this PC.
+		var payload devices.DibalProgramPayload
+		if err := json.Unmarshal(rawPayload, &payload); err != nil {
+			return nil, err
+		}
+
+		bindHost := strings.TrimSpace(payload.Scale.BindHost)
+		if bindHost == "" {
+			bindHost = "0.0.0.0"
+		}
+		rxPort := payload.Scale.RXPort
+		if rxPort <= 0 {
+			rxPort = 3000
+		}
+		timeout := 5 * time.Second
+		if payload.Scale.ReadTimeoutMs > 0 {
+			timeout = time.Duration(payload.Scale.ReadTimeoutMs) * time.Millisecond
+		}
+
+		rxAddr := net.JoinHostPort(bindHost, strconv.Itoa(rxPort))
+		listener, err := net.Listen("tcp", rxAddr)
+		if err != nil {
+			return nil, fmt.Errorf("nie można uruchomić nasłuchu Dibal RX na %s: %w", rxAddr, err)
+		}
+		defer func() {
+			_ = listener.Close()
+		}()
+		if tcpL, ok := listener.(*net.TCPListener); ok {
+			_ = tcpL.SetDeadline(time.Now().Add(timeout))
+		}
+
+		a.logger.Printf("program_dibal_plu: nasłuch na %s, PLU=%s '%s'", rxAddr, payload.PLU.Code, payload.PLU.Name)
+
+		conn, err := listener.Accept()
+		if err != nil {
+			return nil, fmt.Errorf("brak połączenia od wagi Dibal (RX %s): %w", rxAddr, err)
+		}
+		defer func() {
+			_ = conn.Close()
+		}()
+
+		addr := devices.DibalDefaultAddr
+		if payload.Scale.DibalAddr != 0 {
+			addr = payload.Scale.DibalAddr
+		}
+
+		if err = devices.SendDibalPLU(conn, addr, payload.PLU, timeout); err != nil {
+			return nil, fmt.Errorf("błąd programowania PLU Dibal: %w", err)
+		}
+
+		a.logger.Printf("program_dibal_plu: PLU %s zaprogramowany pomyślnie", payload.PLU.Code)
+
+		return map[string]any{
+			"plu_code": payload.PLU.Code,
+			"plu_name": payload.PLU.Name,
+		}, nil
+
 	default:
 		return nil, fmt.Errorf("nieobsługiwana komenda: %s", command)
 	}
