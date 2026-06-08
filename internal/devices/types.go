@@ -39,8 +39,15 @@ type PrinterConfig struct {
 // It programs a PLU (product article) record directly into the Dibal scale
 // over TCP, without requiring Windows Spooler or any Windows driver.
 type DibalProgramPayload struct {
-	Scale  ScaleConfig   `json:"scale"`
-	PLU    DibalPLU      `json:"plu"`
+	Scale ScaleConfig `json:"scale"`
+	PLU   DibalPLU    `json:"plu"`
+}
+
+// PingDevicePayload is the payload for the "ping_device" command.
+// Either Printer or Scale must be set; the other may be zero-valued.
+type PingDevicePayload struct {
+	Printer *PrinterConfig `json:"printer,omitempty"`
+	Scale   *ScaleConfig   `json:"scale,omitempty"`
 }
 
 type WeighAndPrintPayload struct {

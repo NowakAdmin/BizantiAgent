@@ -46,9 +46,9 @@ func (a *App) Run() {
 }
 
 func (a *App) onReady() {
-	// Załaduj ikonę bizanti logo
-	if iconData := loadIcon(); len(iconData) > 0 {
-		systray.SetIcon(iconData)
+	normalIcon := loadIcon()
+	if len(normalIcon) > 0 {
+		systray.SetIcon(normalIcon)
 	}
 
 	systray.SetTitle("Bizanti Agent")
@@ -72,6 +72,13 @@ func (a *App) onReady() {
 	updateItem := systray.AddMenuItem("Sprawdź aktualizacje", "Sprawdź nowszą wersję")
 	updateStatusItem := systray.AddMenuItem("Aktualizacje: nie sprawdzono", "Status aktualizacji")
 	updateStatusItem.Disable()
+	rollbackItem := systray.AddMenuItem("Przywróć poprzednią wersję", "Przywróć BizantiAgent.previous.exe")
+
+	// Hide rollback unless a previous backup exists.
+	if !previousVersionExists() {
+		rollbackItem.Hide()
+	}
+
 	reloadItem := systray.AddMenuItem("Przeładuj ustawienia", "Przeładuj config.json bez restartu")
 	settingsItem := systray.AddMenuItem("Ustawienia", "Otwórz plik konfiguracji")
 	logsItem := systray.AddMenuItem("Pokaż log", "Otwórz agent.log")
@@ -84,7 +91,6 @@ func (a *App) onReady() {
 
 	ctx := context.Background()
 
-	// Auto-start agent on tray creation
 	a.logger.Printf("Auto-start agenta na starcie tryski")
 	if err := a.agent.Start(ctx); err != nil {
 		a.logger.Printf("Błąd auto-startu agenta: %v", err)
@@ -95,12 +101,11 @@ func (a *App) onReady() {
 		stop.Enable()
 	}
 
-	updateTicker := time.NewTicker(time.Duration(a.cfg.Update.CheckIntervalHours) * time.Hour)
-	if a.cfg.Update.CheckIntervalHours <= 0 {
-		updateTicker = time.NewTicker(6 * time.Hour)
+	updateTicker := time.NewTicker(6 * time.Hour)
+	if a.cfg.Update.CheckIntervalHours > 0 {
+		updateTicker = time.NewTicker(time.Duration(a.cfg.Update.CheckIntervalHours) * time.Hour)
 	}
 
-	// Status update ticker - update status display every 500ms
 	statusTicker := time.NewTicker(500 * time.Millisecond)
 
 	go func() {
@@ -113,15 +118,12 @@ func (a *App) onReady() {
 				if a.agent.IsRunning() {
 					continue
 				}
-
 				a.logger.Printf("Start agenta: żądanie połączenia")
-
 				if startErr := a.agent.Start(ctx); startErr != nil {
 					a.logger.Printf("Błąd startu agenta: %v", startErr)
 					status.SetTitle("Status: błąd")
 					continue
 				}
-
 				status.SetTitle("Status: łączenie...")
 				start.Disable()
 				stop.Enable()
@@ -142,18 +144,15 @@ func (a *App) onReady() {
 					autostartItem.Uncheck()
 					continue
 				}
-
 				executablePath, pathErr := os.Executable()
 				if pathErr != nil {
 					a.logger.Printf("Błąd ścieżki EXE: %v", pathErr)
 					continue
 				}
-
 				if enableErr := autostart.Enable(appName, executablePath); enableErr != nil {
 					a.logger.Printf("Błąd autostartu: %v", enableErr)
 					continue
 				}
-
 				autostartItem.Check()
 
 			case <-updateItem.ClickedCh:
@@ -172,76 +171,60 @@ func (a *App) onReady() {
 					a.logger.Printf("Dostępna aktualizacja %s: %s", result.Version, result.URL)
 					updateStatusItem.SetTitle(fmt.Sprintf("Aktualizacje: nowa %s", result.Version))
 					if showMessageBox("Bizanti Agent", fmt.Sprintf("Dostępna aktualizacja %s. Zainstalować teraz?", result.Version), mbYesNo|mbIconInfo) == idYes {
-						updateStatusItem.SetTitle("Aktualizacje: pobieranie...")
-						downloadCtx, cancelDownload := context.WithTimeout(context.Background(), 60*time.Second)
-						newBinaryPath, _, downloadErr := update.DownloadLatestWindowsAsset(downloadCtx, a.cfg.Update.GitHubRepo)
-						cancelDownload()
-						if downloadErr != nil {
-							a.logger.Printf("Błąd pobierania aktualizacji: %v", downloadErr)
-							updateStatusItem.SetTitle("Aktualizacje: błąd")
-							showMessageBox("Bizanti Agent", "Nie udało się pobrać aktualizacji.", mbOK|mbIconError)
-							continue
-						}
-
-						if updateErr := update.StartSelfUpdate(newBinaryPath); updateErr != nil {
-							a.logger.Printf("Błąd aktualizacji: %v", updateErr)
-							updateStatusItem.SetTitle("Aktualizacje: błąd")
-							showMessageBox("Bizanti Agent", "Nie udało się zainstalować aktualizacji.", mbOK|mbIconError)
-							continue
-						}
-
-						a.logger.Printf("Aktualizacja pobrana, restart")
-						a.agent.Stop()
-						systray.Quit()
-						os.Exit(0)
+						a.performUpdate(result.Version, updateStatusItem, rollbackItem, normalIcon)
 					}
 				} else {
-					a.logger.Printf("✓ Używasz najnowszej wersji %s", version.Version)
+					a.logger.Printf("Używasz najnowszej wersji %s", version.Version)
 					updateStatusItem.SetTitle(fmt.Sprintf("Aktualizacje: najnowsza %s", version.Version))
+					systray.SetIcon(normalIcon)
 					showMessageBox("Bizanti Agent", fmt.Sprintf("Masz najnowszą wersję %s", version.Version), mbOK|mbIconInfo)
 				}
-				case <-reloadItem.ClickedCh:
-					newCfg, err := config.Load()
-					if err != nil {
-						a.logger.Printf("Błąd przeładowania config: %v", err)
+
+			case <-rollbackItem.ClickedCh:
+				a.performRollback(rollbackItem)
+
+			case <-reloadItem.ClickedCh:
+				newCfg, reloadErr := config.Load()
+				if reloadErr != nil {
+					a.logger.Printf("Błąd przeładowania config: %v", reloadErr)
+					continue
+				}
+				a.cfg = newCfg
+				a.logger.Printf("Ustawienia przeładowane bez restartu")
+
+			case <-settingsItem.ClickedCh:
+				cfgPath := config.Path()
+				if _, statErr := os.Stat(cfgPath); statErr != nil {
+					if errCreate := config.Save(a.cfg); errCreate != nil {
+						a.logger.Printf("Błąd tworzenia konfiguracji: %v", errCreate)
 						continue
 					}
-					a.cfg = newCfg
-					a.logger.Printf("✓ Ustawienia przeładowane bez restartu")
+				}
+				if runtime.GOOS == "windows" {
+					if err := exec.Command("notepad.exe", cfgPath).Start(); err != nil {
+						a.logger.Printf("Błąd otwarcia edytora: %v", err)
+					}
+				}
 
-				case <-settingsItem.ClickedCh:
-					cfgPath := config.Path()
-					if _, err := os.Stat(cfgPath); err != nil {
-						// Jeśli plik nie istnieje, utwórz go
-						if errCreate := config.Save(a.cfg); errCreate != nil {
-							a.logger.Printf("Błąd tworzenia konfiguracji: %v", errCreate)
-							continue
-						}
+			case <-logsItem.ClickedCh:
+				logPath := filepath.Join(config.LogDir(), "agent.log")
+				if runtime.GOOS == "windows" {
+					if err := ensureLogFile(logPath); err != nil {
+						a.logger.Printf("Błąd przygotowania logu: %v", err)
+						continue
 					}
-					// Otwórz plik w edytorze
-					if runtime.GOOS == "windows" {
-						if err := exec.Command("notepad.exe", cfgPath).Start(); err != nil {
-							a.logger.Printf("Błąd otwarcia edytora: %v", err)
-						}
+					if err := exec.Command("notepad.exe", logPath).Start(); err != nil {
+						a.logger.Printf("Błąd otwarcia logu: %v", err)
 					}
-				case <-logsItem.ClickedCh:
-					logPath := filepath.Join(config.LogDir(), "agent.log")
-					if runtime.GOOS == "windows" {
-						if err := ensureLogFile(logPath); err != nil {
-							a.logger.Printf("Błąd przygotowania logu: %v", err)
-							continue
-						}
-						if err := exec.Command("notepad.exe", logPath).Start(); err != nil {
-							a.logger.Printf("Błąd otwarcia logu: %v", err)
-						}
+				}
+
+			case <-logsFolderItem.ClickedCh:
+				if runtime.GOOS == "windows" {
+					if err := exec.Command("explorer.exe", config.LogDir()).Start(); err != nil {
+						a.logger.Printf("Błąd otwarcia folderu logów: %v", err)
 					}
-				case <-logsFolderItem.ClickedCh:
-					logDir := config.LogDir()
-					if runtime.GOOS == "windows" {
-						if err := exec.Command("explorer.exe", logDir).Start(); err != nil {
-							a.logger.Printf("Błąd otwarcia folderu logów: %v", err)
-						}
-					}
+				}
+
 			case <-updateTicker.C:
 				checkCtx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 				result, updateErr := update.CheckGitHubRelease(checkCtx, a.cfg.Update.GitHubRepo)
@@ -256,12 +239,13 @@ func (a *App) onReady() {
 				if result.HasUpdate {
 					a.logger.Printf("Dostępna aktualizacja %s: %s", result.Version, result.URL)
 					updateStatusItem.SetTitle(fmt.Sprintf("Aktualizacje: nowa %s", result.Version))
+					systray.SetTooltip(fmt.Sprintf("Bizanti Agent v%s — dostępna aktualizacja %s", version.Version, result.Version))
 				} else {
 					updateStatusItem.SetTitle(fmt.Sprintf("Aktualizacje: najnowsza %s", version.Version))
+					systray.SetIcon(normalIcon)
 				}
 
 			case <-statusTicker.C:
-				// Update status item and tooltip with current connection state
 				statusStr := a.agent.GetStatus()
 				status.SetTitle("Status: " + statusStr)
 				systray.SetTooltip(fmt.Sprintf("Bizanti Agent v%s - %s", version.Version, statusStr))
@@ -275,6 +259,100 @@ func (a *App) onReady() {
 	}()
 }
 
+// performUpdate downloads and installs the update, showing progress in the status label.
+func (a *App) performUpdate(newVersion string, statusItem *systray.MenuItem, rollbackItem *systray.MenuItem, normalIcon []byte) {
+	statusItem.SetTitle("Aktualizacje: pobieranie 0%")
+
+	downloadCtx, cancelDownload := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancelDownload()
+
+	progress := func(received, total int64) {
+		if total > 0 {
+			pct := received * 100 / total
+			statusItem.SetTitle(fmt.Sprintf("Aktualizacje: pobieranie %d%%", pct))
+		} else {
+			statusItem.SetTitle(fmt.Sprintf("Aktualizacje: pobieranie %s", formatBytes(received)))
+		}
+	}
+
+	newBinaryPath, _, downloadErr := update.DownloadLatestWindowsAssetWithProgress(downloadCtx, a.cfg.Update.GitHubRepo, progress)
+	if downloadErr != nil {
+		a.logger.Printf("Błąd pobierania aktualizacji: %v", downloadErr)
+		statusItem.SetTitle("Aktualizacje: błąd pobierania")
+		showMessageBox("Bizanti Agent", "Nie udało się pobrać aktualizacji.", mbOK|mbIconError)
+		return
+	}
+
+	statusItem.SetTitle("Aktualizacje: instalowanie...")
+
+	if updateErr := update.StartSelfUpdate(newBinaryPath); updateErr != nil {
+		a.logger.Printf("Błąd aktualizacji: %v", updateErr)
+		statusItem.SetTitle("Aktualizacje: błąd instalacji")
+		showMessageBox("Bizanti Agent", "Nie udało się zainstalować aktualizacji.", mbOK|mbIconError)
+		return
+	}
+
+	a.logger.Printf("Aktualizacja pobrana, restart agenta do wersji %s", newVersion)
+	systray.SetIcon(normalIcon)
+	a.agent.Stop()
+	systray.Quit()
+	os.Exit(0)
+}
+
+// performRollback swaps BizantiAgent.exe back to BizantiAgent.previous.exe.
+func (a *App) performRollback(rollbackItem *systray.MenuItem) {
+	if showMessageBox("Bizanti Agent", "Przywrócić poprzednią wersję agenta?", mbYesNo|mbIconInfo) != idYes {
+		return
+	}
+
+	exePath, err := os.Executable()
+	if err != nil {
+		showMessageBox("Bizanti Agent", fmt.Sprintf("Błąd: %v", err), mbOK|mbIconError)
+		return
+	}
+
+	previousPath := filepath.Join(filepath.Dir(exePath), "BizantiAgent.previous.exe")
+	if _, err := os.Stat(previousPath); err != nil {
+		showMessageBox("Bizanti Agent", "Brak poprzedniej wersji do przywrócenia.", mbOK|mbIconError)
+		rollbackItem.Hide()
+		return
+	}
+
+	if rollbackErr := update.StartRollback(exePath, previousPath); rollbackErr != nil {
+		a.logger.Printf("Błąd rollback: %v", rollbackErr)
+		showMessageBox("Bizanti Agent", fmt.Sprintf("Błąd przywracania: %v", rollbackErr), mbOK|mbIconError)
+		return
+	}
+
+	a.logger.Printf("Rollback zainicjowany, restart agenta")
+	a.agent.Stop()
+	systray.Quit()
+	os.Exit(0)
+}
+
+func previousVersionExists() bool {
+	exePath, err := os.Executable()
+	if err != nil {
+		return false
+	}
+	previousPath := filepath.Join(filepath.Dir(exePath), "BizantiAgent.previous.exe")
+	_, err = os.Stat(previousPath)
+	return err == nil
+}
+
+func formatBytes(b int64) string {
+	const kb = 1024
+	const mb = kb * 1024
+	switch {
+	case b >= mb:
+		return fmt.Sprintf("%.1f MB", float64(b)/mb)
+	case b >= kb:
+		return fmt.Sprintf("%.1f KB", float64(b)/kb)
+	default:
+		return fmt.Sprintf("%d B", b)
+	}
+}
+
 func (a *App) onExit() {
 	a.agent.Stop()
 }
@@ -285,11 +363,11 @@ func openURL(url string) error {
 }
 
 const (
-	mbOK       = 0x00000000
-	mbYesNo    = 0x00000004
-	mbIconInfo = 0x00000040
+	mbOK        = 0x00000000
+	mbYesNo     = 0x00000004
+	mbIconInfo  = 0x00000040
 	mbIconError = 0x00000010
-	idYes      = 6
+	idYes       = 6
 )
 
 func showMessageBox(title, message string, flags uintptr) int {
@@ -308,7 +386,6 @@ func ensureLogFile(logPath string) error {
 	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
 		return err
 	}
-
 	file, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND, 0o644)
 	if err != nil {
 		return err
@@ -316,32 +393,22 @@ func ensureLogFile(logPath string) error {
 	return file.Close()
 }
 
-// loadIcon wczytuje ikonę bizanti logo z dysku i zwraca raw bytes dla systray
+// loadIcon reads the embedded tray icon, falling back to disk.
 func loadIcon() []byte {
 	if len(embeddedTrayIcon) > 0 {
 		return embeddedTrayIcon
 	}
-
-	// Spróbuj wczytać z assets w executable directory
 	exePath, err := os.Executable()
 	if err != nil {
 		return nil
 	}
-	exeDir := filepath.Dir(exePath)
-
-	logoPath := filepath.Join(exeDir, "assets", "app.ico")
-
-	// Fallback - jeśli nie ma w exe dir, spróbuj z bieżącego repo
+	logoPath := filepath.Join(filepath.Dir(exePath), "assets", "app.ico")
 	if _, err := os.Stat(logoPath); err != nil {
 		logoPath = "assets/app.ico"
 	}
-
 	data, err := os.ReadFile(logoPath)
 	if err != nil {
 		return nil
 	}
-
 	return data
 }
-
-

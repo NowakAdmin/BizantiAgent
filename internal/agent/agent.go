@@ -586,6 +586,8 @@ func (a *Agent) runSession(ctx context.Context) error {
 	heartbeatTicker := time.NewTicker(heartbeatEvery)
 	defer heartbeatTicker.Stop()
 
+	ws := &wsSend{conn: conn}
+
 	readErrors := make(chan error, 1)
 	readMessages := make(chan IncomingMessage, 8)
 
@@ -596,7 +598,6 @@ func (a *Agent) runSession(ctx context.Context) error {
 				readErrors <- readErr
 				return
 			}
-
 			readMessages <- message
 		}
 	}()
@@ -604,14 +605,14 @@ func (a *Agent) runSession(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
-			_ = conn.WriteJSON(OutgoingMessage{Type: "status", Status: "offline"})
+			ws.send(OutgoingMessage{Type: "status", Status: "offline"})
 			return context.Canceled
 		case err = <-readErrors:
 			return err
 		case message := <-readMessages:
-			a.handleIncoming(conn, message)
+			a.handleIncoming(ws, message)
 		case <-heartbeatTicker.C:
-			_ = conn.WriteJSON(OutgoingMessage{
+			ws.send(OutgoingMessage{
 				Type:      "heartbeat",
 				AgentID:   a.getServerAgentID(),
 				Timestamp: time.Now().UTC().Format(time.RFC3339),
@@ -621,13 +622,25 @@ func (a *Agent) runSession(ctx context.Context) error {
 	}
 }
 
-func (a *Agent) handleIncoming(conn *websocket.Conn, message IncomingMessage) {
+// wsSend is a mutex-protected WebSocket writer shared across goroutines.
+type wsSend struct {
+	mu   sync.Mutex
+	conn *websocket.Conn
+}
+
+func (w *wsSend) send(v any) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	_ = w.conn.WriteJSON(v)
+}
+
+func (a *Agent) handleIncoming(ws *wsSend, message IncomingMessage) {
 	messageType := strings.ToLower(strings.TrimSpace(message.Type))
 	commandName := strings.ToLower(strings.TrimSpace(message.Command))
 
 	switch {
 	case messageType == "ping" || commandName == "ping":
-		_ = conn.WriteJSON(OutgoingMessage{
+		ws.send(OutgoingMessage{
 			Type:      "pong",
 			AgentID:   a.getServerAgentID(),
 			Timestamp: time.Now().UTC().Format(time.RFC3339),
@@ -636,25 +649,27 @@ func (a *Agent) handleIncoming(conn *websocket.Conn, message IncomingMessage) {
 		return
 
 	case messageType == "command":
-		result, err := a.executeCommand(commandName, message.Payload)
-		out := OutgoingMessage{
-			Type:      "command_result",
-			AgentID:   a.getServerAgentID(),
-			JobID:     message.JobID,
-			Timestamp: time.Now().UTC().Format(time.RFC3339),
-		}
-
-		if err != nil {
-			out.Status = "failed"
-			out.Error = err.Error()
-			a.logger.Printf("Job %s failed: %v", message.JobID, err)
-		} else {
-			out.Status = "completed"
-			out.Data = result
-			a.logger.Printf("Job %s completed", message.JobID)
-		}
-
-		_ = conn.WriteJSON(out)
+		// Execute device commands in a goroutine so the WebSocket read loop
+		// can continue receiving messages (pings, other jobs) during execution.
+		go func() {
+			result, err := a.executeCommand(commandName, message.Payload)
+			out := OutgoingMessage{
+				Type:      "command_result",
+				AgentID:   a.getServerAgentID(),
+				JobID:     message.JobID,
+				Timestamp: time.Now().UTC().Format(time.RFC3339),
+			}
+			if err != nil {
+				out.Status = "failed"
+				out.Error = err.Error()
+				a.logger.Printf("Job %s failed: %v", message.JobID, err)
+			} else {
+				out.Status = "completed"
+				out.Data = result
+				a.logger.Printf("Job %s completed", message.JobID)
+			}
+			ws.send(out)
+		}()
 		return
 	}
 }
@@ -810,6 +825,36 @@ func (a *Agent) executeCommand(command string, rawPayload json.RawMessage) (map[
 			"plu_code": payload.PLU.Code,
 			"plu_name": payload.PLU.Name,
 		}, nil
+
+	case "ping_device":
+		var payload devices.PingDevicePayload
+		if err := json.Unmarshal(rawPayload, &payload); err != nil {
+			return nil, err
+		}
+
+		result := map[string]any{}
+
+		if payload.Printer != nil {
+			pr := devices.PingPrinter(*payload.Printer)
+			result["printer"] = pr
+			if !pr.Reachable {
+				return result, fmt.Errorf("drukarka niedostępna: %s", pr.Error)
+			}
+		}
+
+		if payload.Scale != nil {
+			sr := devices.PingScale(*payload.Scale)
+			result["scale"] = sr
+			if !sr.Reachable {
+				return result, fmt.Errorf("waga niedostępna: %s", sr.Error)
+			}
+		}
+
+		if payload.Printer == nil && payload.Scale == nil {
+			return nil, fmt.Errorf("ping_device: wymagane pole 'printer' lub 'scale'")
+		}
+
+		return result, nil
 
 	default:
 		return nil, fmt.Errorf("nieobsługiwana komenda: %s", command)

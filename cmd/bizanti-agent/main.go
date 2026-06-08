@@ -2,23 +2,20 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"runtime"
-	"strconv"
-	"strings"
 	"syscall"
 	"unsafe"
 
 	"github.com/NowakAdmin/BizantiAgent/internal/agent"
 	"github.com/NowakAdmin/BizantiAgent/internal/config"
 	"github.com/NowakAdmin/BizantiAgent/internal/setup"
+	"github.com/NowakAdmin/BizantiAgent/internal/singleinstance"
 	"github.com/NowakAdmin/BizantiAgent/internal/tray"
 	"github.com/NowakAdmin/BizantiAgent/internal/version"
 )
@@ -124,9 +121,11 @@ func runTray() {
 	}
 
 	if runtime.GOOS == "windows" {
-		if err := ensureSingleInstanceByProcessCleanup(); err != nil {
-			fmt.Fprintf(os.Stderr, "Ostrzeżenie: nie udało się wykonać cleanup innych instancji: %v\n", err)
+		if err := singleinstance.Acquire("Global\\BizantiAgent"); err != nil {
+			showInfoMessage("Bizanti Agent", "BizantiAgent jest już uruchomiony.")
+			return
 		}
+		defer singleinstance.Release()
 	}
 
 	// Dla trybu tray ukryj i odłącz konsolę od razu, żeby nie zostawało puste okno na pasku.
@@ -172,7 +171,7 @@ func buildLogger() (*log.Logger, func(), error) {
 	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
 		return nil, nil, err
 	}
-	_ = os.Remove(logPath)
+	rotateLog(logPath)
 
 	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 	if err != nil {
@@ -187,94 +186,20 @@ func buildLogger() (*log.Logger, func(), error) {
 	}, nil
 }
 
-type processInfo struct {
-	ProcessID      int    `json:"ProcessId"`
-	Name           string `json:"Name"`
-	ExecutablePath string `json:"ExecutablePath"`
-}
-
-func ensureSingleInstanceByProcessCleanup() error {
-	if runtime.GOOS != "windows" {
-		return nil
-	}
-
-	currentPID := os.Getpid()
-	processes, err := listAgentProcesses()
-	if err != nil {
-		return err
-	}
-
-	for _, process := range processes {
-		if process.ProcessID == 0 || process.ProcessID == currentPID {
-			continue
-		}
-
-		otherVersion := detectAgentVersion(process.ExecutablePath)
-		fmt.Fprintf(os.Stderr, "Znaleziono inną instancję agenta (PID %d, wersja %s). Zamykanie...\n", process.ProcessID, otherVersion)
-
-		if terminateErr := terminateProcess(process.ProcessID); terminateErr != nil {
-			fmt.Fprintf(os.Stderr, "Nie udało się zamknąć PID %d: %v\n", process.ProcessID, terminateErr)
+// rotateLog keeps the last 3 log files: agent.log.2 → agent.log.3, agent.log.1 → agent.log.2, agent.log → agent.log.1.
+func rotateLog(logPath string) {
+	for i := 2; i >= 1; i-- {
+		src := fmt.Sprintf("%s.%d", logPath, i)
+		dst := fmt.Sprintf("%s.%d", logPath, i+1)
+		if _, err := os.Stat(src); err == nil {
+			_ = os.Rename(src, dst)
 		}
 	}
-
-	return nil
+	if _, err := os.Stat(logPath); err == nil {
+		_ = os.Rename(logPath, logPath+".1")
+	}
 }
 
-func listAgentProcesses() ([]processInfo, error) {
-	script := "$procs = Get-CimInstance Win32_Process | Where-Object { $_.Name -in @('BizantiAgent.exe','bizanti-agent.exe') } | Select-Object ProcessId,Name,ExecutablePath; if ($procs) { $procs | ConvertTo-Json -Compress }"
-	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script)
-	output, err := cmd.Output()
-	if err != nil {
-		return nil, err
-	}
-
-	trimmed := strings.TrimSpace(string(output))
-	if trimmed == "" {
-		return []processInfo{}, nil
-	}
-
-	if strings.HasPrefix(trimmed, "[") {
-		var processes []processInfo
-		if unmarshalErr := json.Unmarshal([]byte(trimmed), &processes); unmarshalErr != nil {
-			return nil, unmarshalErr
-		}
-		return processes, nil
-	}
-
-	var single processInfo
-	if unmarshalErr := json.Unmarshal([]byte(trimmed), &single); unmarshalErr != nil {
-		return nil, unmarshalErr
-	}
-
-	return []processInfo{single}, nil
-}
-
-func detectAgentVersion(executablePath string) string {
-	path := strings.TrimSpace(executablePath)
-	if path == "" {
-		return "unknown"
-	}
-
-	cmd := exec.Command(path, "version")
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	output, err := cmd.Output()
-	if err != nil {
-		return "unknown"
-	}
-
-	versionOutput := strings.TrimSpace(string(output))
-	versionOutput = strings.TrimPrefix(versionOutput, "BizantiAgent ")
-	if versionOutput == "" {
-		return "unknown"
-	}
-
-	return versionOutput
-}
-
-func terminateProcess(pid int) error {
-	cmd := exec.Command("taskkill", "/PID", strconv.Itoa(pid), "/T", "/F")
-	return cmd.Run()
-}
 
 const mbOK = 0x00000000
 const mbYesNo = 0x00000004

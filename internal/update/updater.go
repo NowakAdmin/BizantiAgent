@@ -70,7 +70,15 @@ func GetLatestRelease(ctx context.Context, repo string) (LatestReleaseResponse, 
 	return release, nil
 }
 
+// ProgressFunc is called periodically during a download with bytes received and
+// total bytes (-1 when Content-Length is unknown).
+type ProgressFunc func(received, total int64)
+
 func DownloadLatestWindowsAsset(ctx context.Context, repo string) (string, LatestReleaseResponse, error) {
+	return DownloadLatestWindowsAssetWithProgress(ctx, repo, nil)
+}
+
+func DownloadLatestWindowsAssetWithProgress(ctx context.Context, repo string, progress ProgressFunc) (string, LatestReleaseResponse, error) {
 	release, err := GetLatestRelease(ctx, repo)
 	if err != nil {
 		if strings.Contains(err.Error(), "brak opublikowanego release") {
@@ -81,10 +89,12 @@ func DownloadLatestWindowsAsset(ctx context.Context, repo string) (string, Lates
 
 	assetURL := ""
 	assetName := ""
+	var assetSize int64
 	for _, asset := range release.Assets {
 		if strings.EqualFold(asset.Name, "BizantiAgent.exe") {
 			assetURL = asset.BrowserDownloadURL
 			assetName = asset.Name
+			assetSize = asset.Size
 			break
 		}
 	}
@@ -93,6 +103,7 @@ func DownloadLatestWindowsAsset(ctx context.Context, repo string) (string, Lates
 			if strings.HasSuffix(strings.ToLower(asset.Name), ".exe") {
 				assetURL = asset.BrowserDownloadURL
 				assetName = asset.Name
+				assetSize = asset.Size
 				break
 			}
 		}
@@ -106,7 +117,7 @@ func DownloadLatestWindowsAsset(ctx context.Context, repo string) (string, Lates
 		return "", LatestReleaseResponse{}, err
 	}
 
-	client := &http.Client{Timeout: 60 * time.Second}
+	client := &http.Client{Timeout: 5 * time.Minute}
 	response, err := client.Do(request)
 	if err != nil {
 		return "", LatestReleaseResponse{}, err
@@ -117,6 +128,12 @@ func DownloadLatestWindowsAsset(ctx context.Context, repo string) (string, Lates
 
 	if response.StatusCode >= 300 {
 		return "", LatestReleaseResponse{}, fmt.Errorf("download status %d", response.StatusCode)
+	}
+
+	// Prefer Content-Length from response over release metadata.
+	total := assetSize
+	if response.ContentLength > 0 {
+		total = response.ContentLength
 	}
 
 	prefix := strings.TrimSuffix(assetName, ".exe")
@@ -131,11 +148,33 @@ func DownloadLatestWindowsAsset(ctx context.Context, repo string) (string, Lates
 		_ = tmpFile.Close()
 	}()
 
-	if _, err = io.Copy(tmpFile, response.Body); err != nil {
+	var src io.Reader = response.Body
+	if progress != nil {
+		src = &progressReader{r: response.Body, total: total, fn: progress}
+	}
+
+	if _, err = io.Copy(tmpFile, src); err != nil {
 		return "", LatestReleaseResponse{}, err
 	}
 
 	return tmpFile.Name(), release, nil
+}
+
+// progressReader wraps an io.Reader and calls fn after each read.
+type progressReader struct {
+	r        io.Reader
+	total    int64
+	received int64
+	fn       ProgressFunc
+}
+
+func (pr *progressReader) Read(p []byte) (int, error) {
+	n, err := pr.r.Read(p)
+	if n > 0 {
+		pr.received += int64(n)
+		pr.fn(pr.received, pr.total)
+	}
+	return n, err
 }
 
 func downloadFromTaggedRepoAssets(ctx context.Context, repo string) (string, LatestReleaseResponse, error) {
@@ -274,6 +313,18 @@ func normalizeVersion(v string) string {
 	v = strings.TrimSpace(v)
 	v = strings.TrimPrefix(v, "v")
 	return v
+}
+
+// StartRollback replaces targetPath with previousBinaryPath using the same
+// detached PowerShell mechanism as StartSelfUpdate.
+func StartRollback(targetPath, previousBinaryPath string) error {
+	if runtime.GOOS != "windows" {
+		return errors.New("rollback wspierany tylko na Windows")
+	}
+	if strings.TrimSpace(previousBinaryPath) == "" {
+		return errors.New("brak ścieżki do poprzedniej wersji")
+	}
+	return StartSelfUpdate(previousBinaryPath)
 }
 
 func StartSelfUpdate(newBinaryPath string) error {
