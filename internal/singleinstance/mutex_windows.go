@@ -29,8 +29,8 @@ func Acquire(name string) error {
 	}
 
 	h, _, callErr := procCreateMutexW.Call(
-		0,                            // lpMutexAttributes (NULL)
-		1,                            // bInitialOwner = TRUE
+		0, // lpMutexAttributes (NULL)
+		1, // bInitialOwner = TRUE
 		uintptr(unsafe.Pointer(namePtr)),
 	)
 	if h == 0 {

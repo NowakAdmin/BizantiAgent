@@ -57,6 +57,9 @@ func runConfigure() {
 
 	cfg.ServerURL = *serverURL
 	cfg.WebSocketURL = *wsURL
+	if cfg.WebSocketURL == "" {
+		cfg.WebSocketURL = config.DefaultWebSocketURL(cfg.ServerURL)
+	}
 	cfg.AgentToken = *token
 	cfg.TenantID = *tenantID
 	cfg.Update.GitHubRepo = *githubRepo
@@ -200,7 +203,6 @@ func rotateLog(logPath string) {
 	}
 }
 
-
 const mbOK = 0x00000000
 const mbYesNo = 0x00000004
 const mbIconInfo = 0x00000040
@@ -229,5 +231,3 @@ func showYesNoMessage(title, message string) bool {
 	ret, _, _ := messageBox.Call(0, uintptr(unsafe.Pointer(textPtr)), uintptr(unsafe.Pointer(titlePtr)), mbYesNo|mbIconInfo)
 	return int(ret) == idYes
 }
-
-

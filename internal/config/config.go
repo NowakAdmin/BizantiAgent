@@ -3,9 +3,11 @@ package config
 import (
 	"encoding/json"
 	"errors"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 )
 
 type UpdateConfig struct {
@@ -77,6 +79,10 @@ func Load() (*Config, error) {
 		cfg.Update.CheckIntervalHours = 6
 	}
 
+	if strings.TrimSpace(cfg.WebSocketURL) == "" {
+		cfg.WebSocketURL = DefaultWebSocketURL(cfg.ServerURL)
+	}
+
 	for i := range cfg.DibalServers {
 		if cfg.DibalServers[i].BindHost == "" {
 			cfg.DibalServers[i].BindHost = "0.0.0.0"
@@ -93,6 +99,30 @@ func Load() (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+func DefaultWebSocketURL(serverURL string) string {
+	base := strings.TrimSpace(serverURL)
+	if base == "" {
+		return ""
+	}
+
+	parsedURL, err := url.Parse(base)
+	if err != nil || parsedURL.Scheme == "" || parsedURL.Host == "" {
+		return ""
+	}
+
+	webSocketScheme := "ws"
+	if parsedURL.Scheme == "https" {
+		webSocketScheme = "wss"
+	}
+
+	parsedURL.Scheme = webSocketScheme
+	parsedURL.Path = strings.TrimRight(parsedURL.Path, "/") + "/agent/ws"
+	parsedURL.RawQuery = ""
+	parsedURL.Fragment = ""
+
+	return parsedURL.String()
 }
 
 func Save(cfg *Config) error {
