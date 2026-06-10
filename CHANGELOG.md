@@ -65,6 +65,18 @@ Wszystkie istotne zmiany w projekcie BizantiAgent.
 
 ---
 
+## [v0.1.21] - 2026-06-10
+
+### Added
+- Wersja release `v0.1.21` przygotowana do self-update; artefakty binarne powinny zostać zbudowane i dołączone do release (Windows/Linux).
+
+### Fixed
+- Poprawiono pobieranie komend HTTP fallback (backend) i domyślną konfigurację websocket w agencie.
+
+### Release
+- Przygotowano manifest i numer wersji (`internal/version/version.go`) dla `v0.1.21`.
+
+
 ## Uwagi o podpisie
 
 - `SignatureType: Authenticode` oznacza poprawnie złożony podpis.

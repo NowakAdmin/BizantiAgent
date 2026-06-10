@@ -1,0 +1,9 @@
+{
+  "version": "v0.1.21",
+  "assets": [
+    {
+      "name": "bizanti-agent-v0.1.21-win64.zip",
+      "platform": "windows-amd64"
+    }
+  ]
+}
