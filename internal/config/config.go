@@ -36,9 +36,9 @@ type Config struct {
 
 func Default() *Config {
 	return &Config{
-		ServerURL:        "https://bizanti.pl",
-		WebSocketURL:     "wss://bizanti.pl/agent/ws",
-		AgentToken:       "",
+		ServerURL:    "https://bizanti.pl",
+		WebSocketURL: "",
+		AgentToken:   "",
 		TenantID:         "",
 		HeartbeatSeconds: 30,
 		Update: UpdateConfig{
@@ -77,10 +77,6 @@ func Load() (*Config, error) {
 
 	if cfg.Update.CheckIntervalHours <= 0 {
 		cfg.Update.CheckIntervalHours = 6
-	}
-
-	if strings.TrimSpace(cfg.WebSocketURL) == "" {
-		cfg.WebSocketURL = DefaultWebSocketURL(cfg.ServerURL)
 	}
 
 	for i := range cfg.DibalServers {
