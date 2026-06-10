@@ -431,66 +431,87 @@ $downloaded = '%s'
 $logPath = '%s'
 $scriptPath = $MyInvocation.MyCommand.Path
 $backup = Join-Path (Split-Path -Parent $target) 'BizantiAgent.previous.exe'
-$backupLeaf = Split-Path -Leaf $backup
 
 function Write-UpdateLog {
     param([string]$Message)
-
     $timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss.fff'
-    Add-Content -Path $logPath -Value "[$timestamp] $Message"
+    try { Add-Content -Path $logPath -Value "[$timestamp] $Message" } catch {}
 }
 
 try {
     New-Item -ItemType Directory -Path (Split-Path -Parent $logPath) -Force | Out-Null
-    Write-UpdateLog "Start self-update. target=$target staged=$staged downloaded=$downloaded"
+    Write-UpdateLog "=== Start self-update. target=$target staged=$staged ==="
 
-    Stop-Process -Name 'BizantiAgent' -Force -ErrorAction SilentlyContinue
-    Stop-Process -Name 'bizanti-agent' -Force -ErrorAction SilentlyContinue
+    # --- Kill running instances ---
+    Stop-Process -Name 'BizantiAgent'   -Force -ErrorAction SilentlyContinue
+    Stop-Process -Name 'bizanti-agent'  -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Milliseconds 300
+    & taskkill /F /IM 'BizantiAgent.exe' /T 2>&1 | Out-Null
+
+    # --- Wait until process is fully gone (max 10 s) ---
+    $deadline = (Get-Date).AddSeconds(10)
+    while ((Get-Date) -lt $deadline) {
+        if (-not (Get-Process -Name 'BizantiAgent' -ErrorAction SilentlyContinue)) { break }
+        Start-Sleep -Milliseconds 300
+    }
+    Write-UpdateLog "Procesy zakończone. Rozpoczynam podmianę pliku."
 
     $replaced = $false
     for ($attempt = 1; $attempt -le 40; $attempt++) {
         Start-Sleep -Milliseconds 750
 
         try {
+            # Remove old backup first — without silencing the error so the catch
+            # block retries when antivirus still holds it.
             if (Test-Path $backup) {
-                Remove-Item $backup -Force -ErrorAction SilentlyContinue
+                Remove-Item $backup -Force
             }
 
+            # Move current exe → backup (Move-Item -Force overwrites on Windows).
             if (Test-Path $target) {
-                Rename-Item -Path $target -NewName $backupLeaf -Force
+                Move-Item -Path $target -Destination $backup -Force
             }
 
+            # Move staged → target.
             Move-Item -Path $staged -Destination $target -Force
-            if (Test-Path $backup) {
-                Remove-Item $backup -Force -ErrorAction SilentlyContinue
-            }
 
             $replaced = $true
-            Write-UpdateLog "Podmieniono plik EXE w próbie #$attempt."
+            Write-UpdateLog "OK: plik EXE podmieniony w próbie #$attempt."
             break
         } catch {
+            Write-UpdateLog "Próba #$attempt nieudana: $($_.Exception.Message)"
+
+            # If target was moved to backup but staged did not land, restore.
             if ((-not (Test-Path $target)) -and (Test-Path $backup)) {
                 try {
                     Move-Item -Path $backup -Destination $target -Force
+                    Write-UpdateLog "Przywrócono backup po nieudanej próbie #$attempt."
                 } catch {
-                    Write-UpdateLog "Nie udało się przywrócić poprzedniej wersji: $($_.Exception.Message)"
+                    Write-UpdateLog "BŁĄD PRZYWRACANIA: $($_.Exception.Message)"
                 }
             }
-
-            Write-UpdateLog "Próba #$attempt nieudana: $($_.Exception.Message)"
         }
     }
 
     if (-not $replaced) {
+        # Update failed — restart the old binary so the agent is not left dead.
+        Write-UpdateLog "BŁĄD: nie udało się podmienić EXE po 40 próbach. Wznawiam starą wersję."
+        if (Test-Path $target) {
+            Start-Process -FilePath $target | Out-Null
+            Write-UpdateLog "Uruchomiono starą wersję agenta."
+        }
         throw 'Nie udało się podmienić pliku BizantiAgent.exe po 40 próbach.'
     }
 
+    # Cleanup temp download file.
     if (Test-Path $downloaded) {
         Remove-Item $downloaded -Force -ErrorAction SilentlyContinue
     }
 
+    # Give the OS a moment to fully release file handles before launching.
+    Start-Sleep -Milliseconds 1000
     Start-Process -FilePath $target | Out-Null
-    Write-UpdateLog 'Uruchomiono nową wersję agenta.'
+    Write-UpdateLog "Uruchomiono nową wersję agenta."
 } catch {
     Write-UpdateLog "BŁĄD AKTUALIZACJI: $($_.Exception.Message)"
 } finally {
