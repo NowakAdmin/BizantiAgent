@@ -27,6 +27,11 @@ type PrinterConfig struct {
 	Port          int    `json:"port,omitempty"`
 	WriteTimeoutS int    `json:"write_timeout_s,omitempty"`
 
+	// HTTP web interface fields (used by read_printer_settings command).
+	WebPort int    `json:"web_port,omitempty"` // HTTP UI port, defaults to 80
+	WebUser string `json:"web_user,omitempty"` // Basic auth username (optional)
+	WebPass string `json:"web_pass,omitempty"` // Basic auth password (optional)
+
 	// Dibal K-series direct TCP fields (used when transport = "dibal_direct").
 	// The Lantronix adapter on the scale connects FROM scale TO PC.
 	// PC listens on DibalRXPort; scale sends commands to that port.
@@ -48,6 +53,12 @@ type DibalProgramPayload struct {
 type PingDevicePayload struct {
 	Printer *PrinterConfig `json:"printer,omitempty"`
 	Scale   *ScaleConfig   `json:"scale,omitempty"`
+}
+
+// ReadPrinterSettingsPayload is the payload for the "read_printer_settings" command.
+// The agent fetches the printer's HTTP web interface and returns parsed settings.
+type ReadPrinterSettingsPayload struct {
+	Printer PrinterConfig `json:"printer"`
 }
 
 type WeighAndPrintPayload struct {

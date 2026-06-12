@@ -2,6 +2,16 @@
 
 Wszystkie istotne zmiany w projekcie BizantiAgent.
 
+## [v0.1.24] - 2026-06-12
+
+### Added
+- Nowa komenda `read_printer_settings` — agent pobiera konfigurację drukarki bezpośrednio z jej wbudowanego interfejsu webowego (HTTP) i zwraca sparsowane ustawienia do aplikacji Bizanti. Obsługuje Intermec PM43c i kompatybilne drukarki Honeywell.
+- Nowe opcjonalne pola w konfiguracji drukarki: `web_port` (domyślnie 80), `web_user`, `web_pass` (do Basic Auth).
+- Odpowiedź zawiera `raw_body` (surowy HTML, maks. 4000 znaków) oraz `parsed` (wyodrębnione pary klucz-wartość: wersja firmware, numer seryjny, adres MAC, IP itp.).
+
+### Release
+- Wydanie zawiera artefakt `BizantiAgent.exe`.
+
 ## [v0.1.14] - 2026-03-12
 
 ### Fixed

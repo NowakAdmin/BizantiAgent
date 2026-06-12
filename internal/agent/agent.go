@@ -856,6 +856,13 @@ func (a *Agent) executeCommand(command string, rawPayload json.RawMessage) (map[
 
 		return result, nil
 
+	case "read_printer_settings":
+		var payload devices.ReadPrinterSettingsPayload
+		if err := json.Unmarshal(rawPayload, &payload); err != nil {
+			return nil, err
+		}
+		return devices.FetchPrinterWebSettings(payload.Printer)
+
 	default:
 		return nil, fmt.Errorf("nieobsługiwana komenda: %s", command)
 	}
