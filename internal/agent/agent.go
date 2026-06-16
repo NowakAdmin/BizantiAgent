@@ -832,26 +832,18 @@ func (a *Agent) executeCommand(command string, rawPayload json.RawMessage) (map[
 			return nil, err
 		}
 
+		if payload.Printer == nil && payload.Scale == nil {
+			return nil, fmt.Errorf("ping_device: wymagane pole 'printer' lub 'scale'")
+		}
+
 		result := map[string]any{}
 
 		if payload.Printer != nil {
-			pr := devices.PingPrinter(*payload.Printer)
-			result["printer"] = pr
-			if !pr.Reachable {
-				return result, fmt.Errorf("drukarka niedostępna: %s", pr.Error)
-			}
+			result["printer"] = devices.PingPrinter(*payload.Printer)
 		}
 
 		if payload.Scale != nil {
-			sr := devices.PingScale(*payload.Scale)
-			result["scale"] = sr
-			if !sr.Reachable {
-				return result, fmt.Errorf("waga niedostępna: %s", sr.Error)
-			}
-		}
-
-		if payload.Printer == nil && payload.Scale == nil {
-			return nil, fmt.Errorf("ping_device: wymagane pole 'printer' lub 'scale'")
+			result["scale"] = devices.PingScale(*payload.Scale)
 		}
 
 		return result, nil
