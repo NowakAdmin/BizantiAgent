@@ -1,45 +1,119 @@
-## Build BizantiAgent - example code used in v 0.1.21 use as a reference only
+#!/bin/bash
+set -e
 
-cd /var/www/bizanti-dev-modules/BizantiAgent && \
-GOOS=windows GOARCH=amd64 CGO_ENABLED=0 /usr/local/go/bin/go build \
-  -ldflags "-H=windowsgui -s -w" \
-  -o BizantiAgent.exe \
-  ./cmd/bizanti-agent 2>&1 && \
-echo "BUILD OK" && ls -lh BizantiAgent.exe
+REPO_DIR="/var/www/bizanti-dev-modules/BizantiAgent"
+cd "$REPO_DIR"
 
+echo "=== BizantiAgent Automated Release Builder ==="
+echo ""
 
-git -C /var/www/bizanti-dev-modules/BizantiAgent add BizantiAgent.exe && \
-git -C /var/www/bizanti-dev-modules/BizantiAgent commit -m "v0.1.21: rebuild exe" && \
-git -C /var/www/bizanti-dev-modules/BizantiAgent tag -d v0.1.21 && \
-git -C /var/www/bizanti-dev-modules/BizantiAgent tag v0.1.21 HEAD && \
-git -C /var/www/bizanti-dev-modules/BizantiAgent push origin main && \
-git -C /var/www/bizanti-dev-modules/BizantiAgent push origin :refs/tags/v0.1.21 && \
-git -C /var/www/bizanti-dev-modules/BizantiAgent push origin v0.1.21 && \
-echo "PUSH OK"
+# 1. Read current version
+CURRENT_VERSION=$(grep 'Version = ' internal/version/version.go | sed 's/.*Version = "\([^"]*\)".*/\1/')
+echo "[1/6] Current version: $CURRENT_VERSION"
 
+# Parse version components
+MAJOR=$(echo "$CURRENT_VERSION" | cut -d. -f1)
+MINOR=$(echo "$CURRENT_VERSION" | cut -d. -f2)
+PATCH=$(echo "$CURRENT_VERSION" | cut -d. -f3)
+
+# Increment patch version
+NEW_PATCH=$((PATCH + 1))
+NEW_VERSION="$MAJOR.$MINOR.$NEW_PATCH"
+NEW_TAG="v$NEW_VERSION"
+
+echo "[2/6] New version: $NEW_VERSION"
+echo ""
+
+# 2. Update version file
+echo "[3/6] Updating version file..."
+sed -i "s/Version = \"$CURRENT_VERSION\"/Version = \"$NEW_VERSION\"/" internal/version/version.go
+git add internal/version/version.go
+git commit -m "Bump version to $NEW_VERSION
+
+Co-Authored-By: Claude Haiku 4.5 <noreply@anthropic.com>"
+
+echo "✓ Version bumped"
+echo ""
+
+# 3. Check for Windows binary
+echo "[4/6] Looking for Windows binary..."
+if [ ! -f "BizantiAgent.exe" ]; then
+    echo "❌ ERROR: BizantiAgent.exe not found!"
+    echo "   On Windows, run: .\scripts\build-windows.ps1"
+    echo "   Then on Linux, run this script again."
+    exit 1
+fi
+
+BINARY_SIZE=$(ls -lh BizantiAgent.exe | awk '{print $5}')
+echo "✓ Binary found: BizantiAgent.exe ($BINARY_SIZE)"
+
+# Copy to releases folder
+mkdir -p "releases/bizanti-agent-$NEW_TAG-win64"
+cp BizantiAgent.exe "releases/bizanti-agent-$NEW_TAG-win64/"
+echo "✓ Binary copied to releases/"
+echo ""
+
+# 4. Create git tag
+echo "[5/6] Creating git tag..."
+git tag -a "$NEW_TAG" -m "Release $NEW_TAG"
+git push origin main
+git push origin "$NEW_TAG"
+echo "✓ Tag created and pushed"
+echo ""
+
+# 5. Create GitHub Release and upload binary
+echo "[6/6] Creating GitHub Release..."
 TOKEN=$(cat ~/.git-credentials | grep github.com | sed 's|https://[^:]*:\([^@]*\)@github.com|\1|')
 
-RESPONSE=$(curl -s -X POST \
+if [ -z "$TOKEN" ]; then
+    echo "❌ ERROR: Could not extract GitHub token from ~/.git-credentials"
+    exit 1
+fi
+
+# Create release
+RELEASE_RESPONSE=$(curl -s -X POST \
   -H "Authorization: token $TOKEN" \
   -H "Accept: application/vnd.github+json" \
   "https://api.github.com/repos/NowakAdmin/BizantiAgent/releases" \
-  -d '{
-    "tag_name": "v0.1.21",
-    "name": "v0.1.21",
-    "body": "## Co nowego w v0.1.21\n\n### Poprawki\n- **Auto-derive WebSocket URL** — jeśli `websocket_url` nie jest ustawiony w konfiguracji, agent automatycznie wyprowadza go z `server_url` (np. `https://bizanti.pl` → `wss://bizanti.pl/agent/ws`). Eliminuje konieczność ręcznego ustawiania obu pól.\n- Poprawiono pobieranie komend HTTP fallback z backendu.\n\n### Poprzednie zmiany (v0.1.20)\n- Rotacja logów, rollback UI, wskaźnik postępu pobierania aktualizacji\n- Pojedyncza instancja via Windows named mutex (bez PowerShell)\n- Asynchroniczne wykonywanie komend urządzeń przez WebSocket\n- Nowa komenda `ping_device`",
-    "draft": false,
-    "prerelease": false
-  }')
+  -d "{
+    \"tag_name\": \"$NEW_TAG\",
+    \"name\": \"Release $NEW_TAG\",
+    \"body\": \"## Changes\\n\\nSee commit log: https://github.com/NowakAdmin/BizantiAgent/compare/v$CURRENT_VERSION...$NEW_TAG\",
+    \"draft\": false,
+    \"prerelease\": false
+  }")
 
-echo "$RESPONSE" | python3 -c "import sys,json; r=json.load(sys.stdin); print('Release ID:', r.get('id'), '| Error:', r.get('message','ok'))"
+RELEASE_ID=$(echo "$RELEASE_RESPONSE" | python3 -c "import sys,json; r=json.load(sys.stdin); print(r.get('id',''))" 2>/dev/null || echo "")
 
-TOKEN=$(cat ~/.git-credentials | grep github.com | sed 's|https://[^:]*:\([^@]*\)@github.com|\1|')
+if [ -z "$RELEASE_ID" ]; then
+    echo "❌ ERROR: Failed to create GitHub release"
+    echo "Response: $RELEASE_RESPONSE"
+    exit 1
+fi
 
-UPLOAD=$(curl -s -X POST \
+echo "✓ Release created (ID: $RELEASE_ID)"
+
+# Upload binary
+echo "  Uploading binary..."
+UPLOAD_RESPONSE=$(curl -s -X POST \
   -H "Authorization: token $TOKEN" \
   -H "Accept: application/vnd.github+json" \
   -H "Content-Type: application/octet-stream" \
-  "https://uploads.github.com/repos/NowakAdmin/BizantiAgent/releases/337258918/assets?name=BizantiAgent.exe" \
-  --data-binary @/var/www/bizanti-dev-modules/BizantiAgent/BizantiAgent.exe)
+  "https://uploads.github.com/repos/NowakAdmin/BizantiAgent/releases/$RELEASE_ID/assets?name=BizantiAgent-$NEW_TAG.exe" \
+  --data-binary @"releases/bizanti-agent-$NEW_TAG-win64/BizantiAgent.exe")
 
-echo "$UPLOAD" | python3 -c "import sys,json; r=json.load(sys.stdin); print('Asset:', r.get('name'), '| Size:', r.get('size'), 'B |', r.get('browser_download_url','ERROR: '+str(r.get('message',r))))"
+ASSET_NAME=$(echo "$UPLOAD_RESPONSE" | python3 -c "import sys,json; r=json.load(sys.stdin); print(r.get('name',''))" 2>/dev/null || echo "")
+
+if [ -z "$ASSET_NAME" ]; then
+    echo "❌ ERROR: Failed to upload binary"
+    echo "Response: $UPLOAD_RESPONSE"
+    exit 1
+fi
+
+echo "✓ Binary uploaded: $ASSET_NAME"
+echo ""
+
+echo "=== Release Complete ==="
+echo "Release: $NEW_TAG"
+echo "Binary: https://github.com/NowakAdmin/BizantiAgent/releases/download/$NEW_TAG/$ASSET_NAME"
+echo ""
