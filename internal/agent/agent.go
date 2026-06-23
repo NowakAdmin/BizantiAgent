@@ -786,6 +786,19 @@ func (a *Agent) executeCommand(command string, rawPayload json.RawMessage) (map[
 			"raw_response": response,
 		}, nil
 
+	case "tcp_probe":
+		var payload devices.TcpProbePayload
+		if err := json.Unmarshal(rawPayload, &payload); err != nil {
+			return nil, err
+		}
+
+		response, err := devices.ProbeRawTCP(payload.Host, payload.Port, payload.Data, payload.ReadTimeoutMs)
+		if err != nil {
+			return nil, err
+		}
+
+		return map[string]any{"response": response}, nil
+
 	case "program_dibal_plu":
 		// Programs a PLU record directly into a Dibal K-series scale via TCP.
 		// Does NOT require Windows Spooler or any Windows scale driver.
@@ -854,6 +867,41 @@ func (a *Agent) executeCommand(command string, rawPayload json.RawMessage) (map[
 			return nil, err
 		}
 		return devices.FetchPrinterWebSettings(payload.Printer)
+
+	case "list_serial_ports":
+		ports, err := devices.ListSerialPorts()
+		if err != nil {
+			return nil, fmt.Errorf("błąd listy portów szeregowych: %w", err)
+		}
+		return map[string]any{"ports": ports}, nil
+
+	case "port_scan":
+		var payload devices.PortScanPayload
+		if err := json.Unmarshal(rawPayload, &payload); err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(payload.Host) == "" || len(payload.Ports) == 0 {
+			return nil, fmt.Errorf("port_scan: wymagane pola 'host' i 'ports'")
+		}
+
+		results := devices.ScanPorts(payload.Host, payload.Ports, payload.TimeoutMs)
+		ports := make(map[string]devices.PingResult, len(results))
+		for port, result := range results {
+			ports[fmt.Sprintf("%d", port)] = result
+		}
+		return map[string]any{"ports": ports}, nil
+
+	case "serial_probe":
+		var payload devices.SerialProbeConfig
+		if err := json.Unmarshal(rawPayload, &payload); err != nil {
+			return nil, err
+		}
+
+		response, err := devices.ProbeSerial(payload)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"response": response}, nil
 
 	default:
 		return nil, fmt.Errorf("nieobsługiwana komenda: %s", command)

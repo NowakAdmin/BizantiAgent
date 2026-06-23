@@ -2,6 +2,13 @@
 
 Wszystkie istotne zmiany w projekcie BizantiAgent.
 
+## [v0.1.26] - 2026-06-23
+
+### Added
+- Nowa komenda `list_serial_ports` — zwraca listę portów COM widocznych lokalnie na komputerze agenta.
+- Nowa komenda `port_scan` — sprawdza współbieżnie osiągalność i opóźnienie listy portów TCP na danym hoście (np. żeby znaleźć, na którym porcie drukarka udostępnia pass-through z portu RS232).
+- Nowa komenda `serial_probe` — generyczne wysłanie surowych danych i odczyt odpowiedzi z lokalnego portu COM, bez parsowania wagi (do diagnozowania nieznanych protokołów nowych urządzeń).
+
 ## [v0.1.24] - 2026-06-12
 
 ### Added

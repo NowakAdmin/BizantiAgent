@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"go.bug.st/serial"
@@ -60,13 +61,60 @@ func PingScale(cfg ScaleConfig) PingResult {
 	}
 }
 
+const maxConcurrentPortScans = 50
+
+// ScanPorts tests TCP connectivity to host on each of the given ports
+// concurrently and returns a reachability/latency result per port. It is a
+// generic diagnostic primitive used to discover which port a device (e.g. a
+// printer's auxiliary serial pass-through) actually listens on.
+func ScanPorts(host string, ports []int, timeoutMs int) map[int]PingResult {
+	results := make(map[int]PingResult, len(ports))
+	if strings.TrimSpace(host) == "" || len(ports) == 0 {
+		return results
+	}
+
+	timeout := time.Duration(timeoutMs) * time.Millisecond
+	if timeoutMs <= 0 {
+		timeout = defaultPingTimeout
+	}
+
+	var (
+		mu  sync.Mutex
+		wg  sync.WaitGroup
+		sem = make(chan struct{}, maxConcurrentPortScans)
+	)
+
+	for _, port := range ports {
+		port := port
+		wg.Add(1)
+		sem <- struct{}{}
+		go func() {
+			defer wg.Done()
+			defer func() { <-sem }()
+
+			result := pingTCPWithTimeout(host, port, timeout)
+
+			mu.Lock()
+			results[port] = result
+			mu.Unlock()
+		}()
+	}
+
+	wg.Wait()
+	return results
+}
+
 func pingTCP(host string, port int) PingResult {
+	return pingTCPWithTimeout(host, port, defaultPingTimeout)
+}
+
+func pingTCPWithTimeout(host string, port int, timeout time.Duration) PingResult {
 	if host == "" {
 		return PingResult{Error: "brak adresu hosta"}
 	}
 	addr := fmt.Sprintf("%s:%d", host, port)
 	start := time.Now()
-	conn, err := net.DialTimeout("tcp", addr, defaultPingTimeout)
+	conn, err := net.DialTimeout("tcp", addr, timeout)
 	latency := time.Since(start).Milliseconds()
 	if err != nil {
 		return PingResult{Error: err.Error()}
