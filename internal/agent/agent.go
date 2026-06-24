@@ -18,6 +18,7 @@ import (
 
 	"github.com/NowakAdmin/BizantiAgent/internal/config"
 	"github.com/NowakAdmin/BizantiAgent/internal/devices"
+	"github.com/NowakAdmin/BizantiAgent/internal/version"
 )
 
 type IncomingMessage struct {
@@ -867,6 +868,9 @@ func (a *Agent) executeCommand(command string, rawPayload json.RawMessage) (map[
 			return nil, err
 		}
 		return devices.FetchPrinterWebSettings(payload.Printer)
+
+	case "agent_version":
+		return map[string]any{"version": version.Version}, nil
 
 	case "list_serial_ports":
 		ports, err := devices.ListSerialPorts()

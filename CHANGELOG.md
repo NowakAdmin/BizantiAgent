@@ -2,6 +2,11 @@
 
 Wszystkie istotne zmiany w projekcie BizantiAgent.
 
+## [v0.1.27] - 2026-06-24
+
+### Added
+- Nowa komenda `agent_version` — zwraca wersję działającego procesu agenta. Przydatne do zdalnej weryfikacji, czy automatyczna aktualizacja faktycznie się powiodła, bez czekania na logi czy dostępu do pulpitu.
+
 ## [v0.1.26] - 2026-06-23
 
 ### Added
