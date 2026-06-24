@@ -872,6 +872,18 @@ func (a *Agent) executeCommand(command string, rawPayload json.RawMessage) (map[
 	case "agent_version":
 		return map[string]any{"version": version.Version}, nil
 
+	case "ssh_exec":
+		var payload devices.SSHExecConfig
+		if err := json.Unmarshal(rawPayload, &payload); err != nil {
+			return nil, err
+		}
+
+		output, err := devices.SSHExec(payload)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"output": output}, nil
+
 	case "list_serial_ports":
 		ports, err := devices.ListSerialPorts()
 		if err != nil {

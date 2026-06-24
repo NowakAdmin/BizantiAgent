@@ -2,6 +2,11 @@
 
 Wszystkie istotne zmiany w projekcie BizantiAgent.
 
+## [v0.1.28] - 2026-06-24
+
+### Added
+- Nowa komenda `ssh_exec` — łączy się przez SSH do zadanego hosta (np. wbudowanego Linuksa drukarki) i wykonuje jedną komendę, zwracając stdout/stderr. Pozwala diagnozować urządzenia bez logowania się ręcznie po RDP do komputera z agentem.
+
 ## [v0.1.27] - 2026-06-24
 
 ### Added
