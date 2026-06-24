@@ -7,9 +7,25 @@ cd "$REPO_DIR"
 echo "=== BizantiAgent Automated Release Builder ==="
 echo ""
 
+# 0. Locate a Go toolchain (not always on PATH in this environment)
+if ! command -v go >/dev/null 2>&1; then
+    for candidate in /usr/local/go/bin /usr/lib/go/bin; do
+        if [ -x "$candidate/go" ]; then
+            export PATH="$candidate:$PATH"
+            break
+        fi
+    done
+fi
+
+if ! command -v go >/dev/null 2>&1; then
+    echo "❌ ERROR: 'go' toolchain not found on PATH (checked /usr/local/go/bin)."
+    echo "   Install Go or adjust this script's PATH lookup."
+    exit 1
+fi
+
 # 1. Read current version
 CURRENT_VERSION=$(grep 'Version = ' internal/version/version.go | sed 's/.*Version = "\([^"]*\)".*/\1/')
-echo "[1/6] Current version: $CURRENT_VERSION"
+echo "[1/7] Current version: $CURRENT_VERSION"
 
 # Parse version components
 MAJOR=$(echo "$CURRENT_VERSION" | cut -d. -f1)
@@ -21,11 +37,11 @@ NEW_PATCH=$((PATCH + 1))
 NEW_VERSION="$MAJOR.$MINOR.$NEW_PATCH"
 NEW_TAG="v$NEW_VERSION"
 
-echo "[2/6] New version: $NEW_VERSION"
+echo "[2/7] New version: $NEW_VERSION"
 echo ""
 
 # 2. Update version file
-echo "[3/6] Updating version file..."
+echo "[3/7] Updating version file..."
 sed -i "s/Version = \"$CURRENT_VERSION\"/Version = \"$NEW_VERSION\"/" internal/version/version.go
 git add internal/version/version.go
 git commit -m "Bump version to $NEW_VERSION
@@ -35,17 +51,29 @@ Co-Authored-By: Claude Haiku 4.5 <noreply@anthropic.com>"
 echo "✓ Version bumped"
 echo ""
 
-# 3. Check for Windows binary
-echo "[4/6] Looking for Windows binary..."
+# 3. Rebuild the Windows binary with the bumped version embedded.
+# Must happen AFTER the version bump above — building before it would embed
+# the old version string into a binary published under the new tag.
+echo "[4/7] Rebuilding BizantiAgent.exe (GOOS=windows) with version $NEW_VERSION..."
+GOOS=windows GOARCH=amd64 go build -ldflags "-H=windowsgui -s -w" -o BizantiAgent.exe ./cmd/bizanti-agent
+
 if [ ! -f "BizantiAgent.exe" ]; then
-    echo "❌ ERROR: BizantiAgent.exe not found!"
-    echo "   On Windows, run: .\scripts\build-windows.ps1"
-    echo "   Then on Linux, run this script again."
+    echo "❌ ERROR: build did not produce BizantiAgent.exe"
+    exit 1
+fi
+
+if ! strings BizantiAgent.exe 2>/dev/null | grep -q "$NEW_VERSION"; then
+    echo "❌ ERROR: rebuilt binary does not contain version string $NEW_VERSION — aborting before publishing a stale build."
     exit 1
 fi
 
 BINARY_SIZE=$(ls -lh BizantiAgent.exe | awk '{print $5}')
-echo "✓ Binary found: BizantiAgent.exe ($BINARY_SIZE)"
+echo "✓ Binary built and verified: BizantiAgent.exe ($BINARY_SIZE, embeds $NEW_VERSION)"
+
+git add BizantiAgent.exe
+git commit -m "Rebuild BizantiAgent.exe for $NEW_TAG
+
+Co-Authored-By: Claude Haiku 4.5 <noreply@anthropic.com>"
 
 # Copy to releases folder
 mkdir -p "releases/bizanti-agent-$NEW_TAG-win64"
@@ -54,7 +82,7 @@ echo "✓ Binary copied to releases/"
 echo ""
 
 # 4. Create git tag
-echo "[5/6] Creating git tag..."
+echo "[5/7] Creating git tag..."
 git tag -a "$NEW_TAG" -m "Release $NEW_TAG"
 git push origin main
 git push origin "$NEW_TAG"
@@ -62,7 +90,7 @@ echo "✓ Tag created and pushed"
 echo ""
 
 # 5. Create GitHub Release and upload binary
-echo "[6/6] Creating GitHub Release..."
+echo "[6/7] Creating GitHub Release..."
 TOKEN=$(cat ~/.git-credentials | grep github.com | sed 's|https://[^:]*:\([^@]*\)@github.com|\1|')
 
 if [ -z "$TOKEN" ]; then
