@@ -79,13 +79,3 @@ type TcpProbePayload struct {
 	Data          string `json:"data"`
 	ReadTimeoutMs int    `json:"read_timeout_ms,omitempty"`
 }
-
-// PortScanPayload is the payload for the "port_scan" command. It probes
-// each of Ports on Host and reports per-port reachability/latency — used to
-// discover which TCP port a device actually listens on (e.g. a printer's
-// serial pass-through port).
-type PortScanPayload struct {
-	Host      string `json:"host"`
-	Ports     []int  `json:"ports"`
-	TimeoutMs int    `json:"timeout_ms,omitempty"`
-}

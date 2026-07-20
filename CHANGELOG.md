@@ -2,6 +2,19 @@
 
 Wszystkie istotne zmiany w projekcie BizantiAgent.
 
+## [v0.1.29] - 2026-07-20
+
+### Changed
+- Komendy diagnostyczne `ssh_exec` i `port_scan` przeniesione za flagę kompilacji `debugtools` — **nie ma ich już w produkcyjnej binarce** (budowanej domyślnie), tylko w wewnętrznym wariancie `-debug` do nowych wdrożeń i analizy nowych modeli urządzeń. Usuwa to z produkcyjnego EXE bibliotekę SSH oraz zachowanie skanowania portów, które heurystyki ML antywirusów oznaczały jako zagrożenie (`Trojan:Win32/Sabsik.TE.A!ml`).
+- Binarka zawiera teraz metadane VERSIONINFO (nazwa firmy, opis, wersja, copyright, znak towarowy) oraz manifest aplikacji `asInvoker` — obniża wynik heurystyki AV i pokazuje dane wydawcy we właściwościach pliku oraz oknie SmartScreen.
+
+### Fixed
+- `ssh_exec` ma teraz limit czasu na **wykonanie** komendy (dotąd tylko na połączenie) — zawieszona komenda zdalna nie blokuje już agenta w nieskończoność.
+- Fallback HTTP-polling wykonuje komendy współbieżnie — wolna lub zawieszona komenda nie zamraża już pulsu (heartbeat) ani nie blokuje zamknięcia agenta.
+
+### Release
+- Wydanie zawiera artefakt `BizantiAgent.exe` (produkcyjny, bez narzędzi debug).
+
 ## [v0.1.28] - 2026-06-24
 
 ### Added

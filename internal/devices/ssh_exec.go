@@ -1,3 +1,10 @@
+//go:build debugtools
+
+// ssh_exec is a discovery/diagnostic primitive gated behind the `debugtools`
+// build tag: it is compiled only into the internal -debug binary, never into
+// the production build shipped to clients. Excluding it (and the crypto/ssh
+// dependency it pulls in) keeps the production binary clear of the remote-exec
+// behavior that antivirus ML heuristics flag as a hacktool.
 package devices
 
 import (
@@ -72,14 +79,32 @@ func SSHExec(cfg SSHExecConfig) (string, error) {
 	session.Stdout = &output
 	session.Stderr = &output
 
-	if err := session.Run(cfg.Command); err != nil {
-		// A non-zero remote exit status is a normal diagnostic outcome, not a
-		// tool failure — return whatever the command printed either way.
-		if _, isExitErr := err.(*ssh.ExitError); isExitErr {
-			return output.String(), nil
-		}
-		return output.String(), fmt.Errorf("ssh_exec: błąd wykonania komendy: %w", err)
-	}
+	// session.Run has no built-in timeout — Timeout above only bounds the dial.
+	// Without this, a remote command that never returns blocks the agent's task
+	// loop forever. Bound execution with the same timeout and abort on overrun.
+	runDone := make(chan error, 1)
+	go func() {
+		runDone <- session.Run(cfg.Command)
+	}()
 
-	return output.String(), nil
+	select {
+	case err := <-runDone:
+		if err != nil {
+			// A non-zero remote exit status is a normal diagnostic outcome, not a
+			// tool failure — return whatever the command printed either way.
+			if _, isExitErr := err.(*ssh.ExitError); isExitErr {
+				return output.String(), nil
+			}
+			return output.String(), fmt.Errorf("ssh_exec: błąd wykonania komendy: %w", err)
+		}
+		return output.String(), nil
+
+	case <-time.After(timeout):
+		// Abort the stuck command. Closing the session unblocks the goroutine's
+		// Run; we intentionally do not read `output` here to avoid racing that
+		// still-writing goroutine.
+		_ = session.Signal(ssh.SIGKILL)
+		_ = session.Close()
+		return "", fmt.Errorf("ssh_exec: przekroczono limit czasu wykonania komendy (%s)", timeout)
+	}
 }

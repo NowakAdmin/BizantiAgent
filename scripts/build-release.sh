@@ -23,6 +23,14 @@ if ! command -v go >/dev/null 2>&1; then
     exit 1
 fi
 
+# 0b. Locate go-winres (embeds icon + VERSIONINFO + manifest into the .syso).
+# Installed into GOPATH/bin; add it to PATH and install on first run if missing.
+export PATH="$PATH:$(go env GOPATH)/bin"
+if ! command -v go-winres >/dev/null 2>&1; then
+    echo "go-winres not found — installing..."
+    go install github.com/tc-hib/go-winres@latest
+fi
+
 # 1. Read current version
 CURRENT_VERSION=$(grep 'Version = ' internal/version/version.go | sed 's/.*Version = "\([^"]*\)".*/\1/')
 echo "[1/7] Current version: $CURRENT_VERSION"
@@ -55,7 +63,16 @@ echo ""
 # Must happen AFTER the version bump above — building before it would embed
 # the old version string into a binary published under the new tag.
 echo "[4/7] Rebuilding BizantiAgent.exe (GOOS=windows) with version $NEW_VERSION..."
-GOOS=windows GOARCH=amd64 go build -ldflags "-H=windowsgui -s -w" -o BizantiAgent.exe ./cmd/bizanti-agent
+
+# 3a. Sync the 4-part version into winres.json and regenerate the resource .syso,
+# so the embedded VERSIONINFO (file/product version) matches the bumped version.
+# The only 4-part numbers in winres.json are the version fields, so a blanket replace is safe.
+sed -i -E "s/[0-9]+\.[0-9]+\.[0-9]+\.0/${NEW_VERSION}.0/g" winres/winres.json
+go-winres make --in winres/winres.json --arch amd64 --out cmd/bizanti-agent/rsrc
+
+# -s strips the symbol table; -w (DWARF strip) intentionally omitted — a fully
+# stripped binary raises the antivirus ML "packed" score.
+GOOS=windows GOARCH=amd64 go build -ldflags "-H=windowsgui -s" -o BizantiAgent.exe ./cmd/bizanti-agent
 
 if [ ! -f "BizantiAgent.exe" ]; then
     echo "❌ ERROR: build did not produce BizantiAgent.exe"
@@ -70,7 +87,7 @@ fi
 BINARY_SIZE=$(ls -lh BizantiAgent.exe | awk '{print $5}')
 echo "✓ Binary built and verified: BizantiAgent.exe ($BINARY_SIZE, embeds $NEW_VERSION)"
 
-git add BizantiAgent.exe
+git add BizantiAgent.exe winres/winres.json cmd/bizanti-agent/rsrc_windows_amd64.syso
 git commit -m "Rebuild BizantiAgent.exe for $NEW_TAG
 
 Co-Authored-By: Claude Haiku 4.5 <noreply@anthropic.com>"

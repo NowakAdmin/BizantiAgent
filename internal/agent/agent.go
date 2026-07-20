@@ -381,12 +381,18 @@ func (a *Agent) runHTTPPolling(ctx context.Context, maxDuration time.Duration) e
 				return err
 			}
 
+			// Execute each command in its own goroutine so a slow/hung command
+			// can't block the heartbeat or ctx cancellation in this select loop
+			// (mirrors the WebSocket path in handleIncoming).
 			for _, message := range commands {
-				commandName := strings.ToLower(strings.TrimSpace(message.Command))
-				result, execErr := a.executeCommand(commandName, message.Payload)
-				if reportErr := a.reportCommandResult(ctx, message.JobID, result, execErr); reportErr != nil {
-					a.logger.Printf("Błąd raportowania wyniku job %s: %v", message.JobID, reportErr)
-				}
+				message := message
+				go func() {
+					commandName := strings.ToLower(strings.TrimSpace(message.Command))
+					result, execErr := a.executeCommand(commandName, message.Payload)
+					if reportErr := a.reportCommandResult(ctx, message.JobID, result, execErr); reportErr != nil {
+						a.logger.Printf("Błąd raportowania wyniku job %s: %v", message.JobID, reportErr)
+					}
+				}()
 			}
 		}
 	}
@@ -676,6 +682,13 @@ func (a *Agent) handleIncoming(ws *wsSend, message IncomingMessage) {
 }
 
 func (a *Agent) executeCommand(command string, rawPayload json.RawMessage) (map[string]any, error) {
+	// Discovery/diagnostic commands (ssh_exec, port_scan) are compiled in only
+	// under the `debugtools` build tag. In the production build the stub reports
+	// them as unhandled, so they fall through to the "unknown command" default.
+	if result, handled, err := a.executeDebugCommand(command, rawPayload); handled {
+		return result, err
+	}
+
 	switch command {
 	case "weigh_and_print":
 		var payload devices.WeighAndPrintPayload
@@ -872,38 +885,10 @@ func (a *Agent) executeCommand(command string, rawPayload json.RawMessage) (map[
 	case "agent_version":
 		return map[string]any{"version": version.Version}, nil
 
-	case "ssh_exec":
-		var payload devices.SSHExecConfig
-		if err := json.Unmarshal(rawPayload, &payload); err != nil {
-			return nil, err
-		}
-
-		output, err := devices.SSHExec(payload)
-		if err != nil {
-			return nil, err
-		}
-		return map[string]any{"output": output}, nil
-
 	case "list_serial_ports":
 		ports, err := devices.ListSerialPorts()
 		if err != nil {
 			return nil, fmt.Errorf("błąd listy portów szeregowych: %w", err)
-		}
-		return map[string]any{"ports": ports}, nil
-
-	case "port_scan":
-		var payload devices.PortScanPayload
-		if err := json.Unmarshal(rawPayload, &payload); err != nil {
-			return nil, err
-		}
-		if strings.TrimSpace(payload.Host) == "" || len(payload.Ports) == 0 {
-			return nil, fmt.Errorf("port_scan: wymagane pola 'host' i 'ports'")
-		}
-
-		results := devices.ScanPorts(payload.Host, payload.Ports, payload.TimeoutMs)
-		ports := make(map[string]devices.PingResult, len(results))
-		for port, result := range results {
-			ports[fmt.Sprintf("%d", port)] = result
 		}
 		return map[string]any{"ports": ports}, nil
 
