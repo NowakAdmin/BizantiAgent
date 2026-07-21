@@ -17,6 +17,22 @@ import (
 // debugtools_stub.go always returns handled=false.
 func (a *Agent) executeDebugCommand(command string, rawPayload json.RawMessage) (map[string]any, bool, error) {
 	switch command {
+	case "tcp_capture":
+		var payload struct {
+			BindHost   string `json:"bind_host"`
+			Ports      []int  `json:"ports"`
+			DurationMs int    `json:"duration_ms"`
+		}
+		if err := json.Unmarshal(rawPayload, &payload); err != nil {
+			return nil, true, err
+		}
+
+		results, err := devices.CaptureTCP(payload.BindHost, payload.Ports, payload.DurationMs)
+		if err != nil {
+			return nil, true, err
+		}
+		return map[string]any{"captures": results}, true, nil
+
 	case "ssh_exec":
 		var payload devices.SSHExecConfig
 		if err := json.Unmarshal(rawPayload, &payload); err != nil {
