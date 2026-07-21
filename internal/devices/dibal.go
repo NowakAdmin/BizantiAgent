@@ -211,6 +211,44 @@ func SendDibalPLU(conn net.Conn, addr byte, plu DibalPLU, timeout time.Duration)
 	return SendDibalLines(conn, addr, lines, timeout)
 }
 
+// SendDibalPLUOverTCPClient connects TO the scale and programs a single PLU.
+//
+// Used for Dibal 500-series scales with built-in Ethernet (e.g. W-025S):
+// the scale listens as a TCP server (default port 3000) and the PC initiates
+// the connection — the DFS model, opposite of the K-235 + Lantronix ETS-1
+// "connected mode" handled by DibalManager.
+func SendDibalPLUOverTCPClient(cfg ScaleConfig, plu DibalPLU) error {
+	host := strings.TrimSpace(cfg.TCPHost)
+	if host == "" {
+		return fmt.Errorf("brak tcp_host w konfiguracji wagi Dibal (tryb klienta TCP)")
+	}
+
+	port := cfg.TCPPort
+	if port <= 0 {
+		port = 3000
+	}
+
+	addr := cfg.DibalAddr
+	if addr == 0 {
+		addr = DibalDefaultAddr
+	}
+
+	timeout := dibalDefaultTimeout
+	if cfg.ReadTimeoutMs > 0 {
+		timeout = time.Duration(cfg.ReadTimeoutMs) * time.Millisecond
+	}
+
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort(host, strconv.Itoa(port)), timeout)
+	if err != nil {
+		return fmt.Errorf("nie można połączyć z wagą Dibal %s:%d: %w", host, port, err)
+	}
+	defer func() {
+		_ = conn.Close()
+	}()
+
+	return SendDibalPLU(conn, addr, plu, timeout)
+}
+
 // SendDibalContentOverTCPServer listens on the RX port for the scale's inbound
 // connection (Lantronix "connected" mode) and then sends the given register
 // lines. content is a newline-separated string of high-level semicolon lines.

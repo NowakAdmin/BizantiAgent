@@ -822,6 +822,25 @@ func (a *Agent) executeCommand(command string, rawPayload json.RawMessage) (map[
 			return nil, err
 		}
 
+		// Dibal 500-series built-in Ethernet (e.g. W-025S): the scale is the
+		// TCP server and the PC connects to it. Server-mode (Lantronix) scales
+		// use the DibalManager path below instead.
+		scaleTransport := strings.ToLower(strings.TrimSpace(payload.Scale.Transport))
+		if scaleTransport == "tcp" || scaleTransport == "ethernet" {
+			a.logger.Printf("program_dibal_plu (klient TCP %s:%d): PLU=%s '%s'", payload.Scale.TCPHost, payload.Scale.TCPPort, payload.PLU.Code, payload.PLU.Name)
+
+			if err := devices.SendDibalPLUOverTCPClient(payload.Scale, payload.PLU); err != nil {
+				return nil, fmt.Errorf("błąd programowania PLU Dibal: %w", err)
+			}
+
+			a.logger.Printf("program_dibal_plu: PLU %s zaprogramowany pomyślnie", payload.PLU.Code)
+
+			return map[string]any{
+				"plu_code": payload.PLU.Code,
+				"plu_name": payload.PLU.Name,
+			}, nil
+		}
+
 		rxPort := payload.Scale.RXPort
 		if rxPort <= 0 {
 			rxPort = 3000
