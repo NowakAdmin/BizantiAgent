@@ -986,10 +986,16 @@ func (a *Agent) programDibal500(payload devices.Dibal500ProgramPayload) (map[str
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout+5000)*time.Millisecond)
 	defer cancel()
 
+	transformArg := "0"
+	if payload.Transform {
+		transformArg = "1"
+	}
+
 	cmd := exec.CommandContext(ctx, bridge,
 		scaleIP, strconv.Itoa(scalePort),
 		pcIP, strconv.Itoa(scalePort),
 		hex.EncodeToString(register), strconv.Itoa(timeout),
+		transformArg,
 	)
 	out, runErr := cmd.Output()
 

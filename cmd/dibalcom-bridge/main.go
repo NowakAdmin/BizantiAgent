@@ -48,6 +48,13 @@ func main() {
 		}
 	}
 
+	// bTransformacion: 0 = send raw bytes (correct for our CP1250 path), 1 = let
+	// commL.dll apply its byte transform. Defaults to 0.
+	transform := uintptr(0)
+	if len(os.Args) >= 8 && os.Args[7] == "1" {
+		transform = 1
+	}
+
 	dll, err := loadCommL()
 	if err != nil {
 		fail(err.Error())
@@ -94,8 +101,8 @@ func main() {
 		uintptr(len(reg)),
 		uintptr(unsafe.Pointer(&emptyLog[0])),
 		uintptr(timeout),
-		1, // bTransformacion = true (serie L / 500)
-		1, // bSoloError = true
+		transform, // bTransformacion (0 = raw CP1250)
+		1,         // bSoloError = true
 	)
 	result := int32(r)
 

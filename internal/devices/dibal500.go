@@ -42,6 +42,7 @@ type Dibal500ProgramPayload struct {
 	ScalePort int         `json:"scale_port,omitempty"`
 	PCIP      string      `json:"pc_ip,omitempty"`
 	TimeoutMs int         `json:"timeout_ms,omitempty"`
+	Transform bool        `json:"transform,omitempty"` // commL.dll byte transform; false = raw CP1250 (correct for our path)
 	PLU       Dibal500PLU `json:"plu"`
 }
 
@@ -153,39 +154,19 @@ func directKeyField(key string) []byte {
 	return []byte(fmt.Sprintf("%03d", n%1000))
 }
 
-// textField encodes a name field to fixed width, space-padded, in the scale's
-// code page (Windows-1250). The scale renders text in the PC's ANSI code page
-// (TransformarTextos2 → ANSICodePage), which is CP1250 on a Polish Windows —
-// matching the Dibal manual's Polish character table.
+// textField encodes a name to fixed width, space-padded, in raw Windows-1250 —
+// the scale's native code page (confirmed on hardware: Ć=0xC6, Č=0xC8 match
+// what the scale stores from keyboard entry). Sent with transform=false so
+// commL.dll passes the bytes through unchanged.
 func textField(s string, width int) []byte {
 	out := make([]byte, width)
 	fillSpaces(out)
 	b := cp1250Encode(strings.TrimSpace(s))
-	applySerieLRemap(b)
 	if len(b) > width {
 		b = b[:width]
 	}
 	copy(out, b)
 	return out
-}
-
-// serieLRemap are the post-CP1250 byte substitutions the SERIE_L path applies
-// in ComunicacionesBalPC.TransformarTextos2 — a few characters sit at custom
-// low font codes on the scale.
-var serieLRemap = map[byte]byte{
-	0xD1: 30,  // Ń
-	0xF1: 31,  // ń
-	0xC7: 28,  // Ç
-	0xE7: 29,  // ç
-	0x80: 204, // €
-}
-
-func applySerieLRemap(b []byte) {
-	for i, c := range b {
-		if r, ok := serieLRemap[c]; ok {
-			b[i] = r
-		}
-	}
 }
 
 // cp1250Extra maps the non-ASCII runes common in Polish (and nearby Central
