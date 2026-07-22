@@ -3,12 +3,18 @@ package agent
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -872,6 +878,17 @@ func (a *Agent) executeCommand(command string, rawPayload json.RawMessage) (map[
 			"plu_name": payload.PLU.Name,
 		}, nil
 
+	case "program_dibal_plu_500":
+		// Dibal 500-series (built-in Ethernet, e.g. W-025S): program a PLU by
+		// building the 130-byte L2 register here and handing it to the 32-bit
+		// dibalcom-bridge, which reuses Dibal's native commL.dll for transport.
+		var payload devices.Dibal500ProgramPayload
+		if err := json.Unmarshal(rawPayload, &payload); err != nil {
+			return nil, err
+		}
+
+		return a.programDibal500(payload)
+
 	case "ping_device":
 		var payload devices.PingDevicePayload
 		if err := json.Unmarshal(rawPayload, &payload); err != nil {
@@ -926,6 +943,114 @@ func (a *Agent) executeCommand(command string, rawPayload json.RawMessage) (map[
 	default:
 		return nil, fmt.Errorf("nieobsługiwana komenda: %s", command)
 	}
+}
+
+// programDibal500 builds the L2 article register and hands it to the 32-bit
+// dibalcom-bridge, which reuses Dibal's native commL.dll to reach the scale.
+func (a *Agent) programDibal500(payload devices.Dibal500ProgramPayload) (map[string]any, error) {
+	scaleIP := strings.TrimSpace(payload.ScaleIP)
+	if scaleIP == "" {
+		return nil, fmt.Errorf("brak scale_ip dla wagi Dibal 500")
+	}
+
+	scalePort := payload.ScalePort
+	if scalePort <= 0 {
+		scalePort = 3000
+	}
+
+	timeout := payload.TimeoutMs
+	if timeout <= 0 {
+		timeout = 3000
+	}
+
+	register, err := devices.BuildL2Register(payload.PLU)
+	if err != nil {
+		return nil, fmt.Errorf("budowa rejestru L2: %w", err)
+	}
+
+	pcIP := strings.TrimSpace(payload.PCIP)
+	if pcIP == "" {
+		pcIP = detectLocalIP(scaleIP)
+	}
+	if pcIP == "" {
+		return nil, fmt.Errorf("nie udało się ustalić IP komputera (podaj pc_ip)")
+	}
+
+	bridge, err := dibalBridgePath()
+	if err != nil {
+		return nil, err
+	}
+
+	a.logger.Printf("program_dibal_plu_500: PLU=%s '%s' -> waga %s:%d (PC %s)", payload.PLU.Code, payload.PLU.Name, scaleIP, scalePort, pcIP)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout+5000)*time.Millisecond)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, bridge,
+		scaleIP, strconv.Itoa(scalePort),
+		pcIP, strconv.Itoa(scalePort),
+		hex.EncodeToString(register), strconv.Itoa(timeout),
+	)
+	out, runErr := cmd.Output()
+
+	var res struct {
+		OK     bool   `json:"ok"`
+		Stage  string `json:"stage"`
+		Result int    `json:"result"`
+		Error  string `json:"error"`
+	}
+	_ = json.Unmarshal(bytes.TrimSpace(out), &res)
+
+	if !res.OK {
+		detail := res.Error
+		if detail == "" {
+			detail = strings.TrimSpace(string(out))
+		}
+		if detail == "" && runErr != nil {
+			detail = runErr.Error()
+		}
+		return nil, fmt.Errorf("dibalcom-bridge nie zaprogramował PLU (stage=%s result=%d): %s", res.Stage, res.Result, detail)
+	}
+
+	a.logger.Printf("program_dibal_plu_500: PLU %s zaprogramowany pomyślnie", payload.PLU.Code)
+
+	return map[string]any{
+		"plu_code": payload.PLU.Code,
+		"plu_name": payload.PLU.Name,
+		"pc_ip":    pcIP,
+	}, nil
+}
+
+// dibalBridgePath returns the path to dibalcom-bridge.exe, expected next to the agent.
+func dibalBridgePath() (string, error) {
+	exe, err := os.Executable()
+	if err != nil {
+		return "", fmt.Errorf("nie można ustalić ścieżki agenta: %w", err)
+	}
+
+	bridge := filepath.Join(filepath.Dir(exe), "dibalcom-bridge.exe")
+	if _, statErr := os.Stat(bridge); statErr != nil {
+		return "", fmt.Errorf("brak dibalcom-bridge.exe obok agenta (%s) — skopiuj most i commL.dll", bridge)
+	}
+
+	return bridge, nil
+}
+
+// detectLocalIP returns the local LAN IP the OS would use to reach scaleIP.
+func detectLocalIP(scaleIP string) string {
+	conn, err := net.Dial("udp", net.JoinHostPort(scaleIP, "9"))
+	if err != nil {
+		return ""
+	}
+	defer func() {
+		_ = conn.Close()
+	}()
+
+	if addr, ok := conn.LocalAddr().(*net.UDPAddr); ok {
+		return addr.IP.String()
+	}
+
+	return ""
 }
 
 func (a *Agent) readWeightWithIntermecFallback(scale devices.ScaleConfig, printer devices.PrinterConfig) (float64, string, error) {
