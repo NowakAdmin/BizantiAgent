@@ -161,11 +161,31 @@ func textField(s string, width int) []byte {
 	out := make([]byte, width)
 	fillSpaces(out)
 	b := cp1250Encode(strings.TrimSpace(s))
+	applySerieLRemap(b)
 	if len(b) > width {
 		b = b[:width]
 	}
 	copy(out, b)
 	return out
+}
+
+// serieLRemap are the post-CP1250 byte substitutions the SERIE_L path applies
+// in ComunicacionesBalPC.TransformarTextos2 — a few characters sit at custom
+// low font codes on the scale.
+var serieLRemap = map[byte]byte{
+	0xD1: 30,  // Ń
+	0xF1: 31,  // ń
+	0xC7: 28,  // Ç
+	0xE7: 29,  // ç
+	0x80: 204, // €
+}
+
+func applySerieLRemap(b []byte) {
+	for i, c := range b {
+		if r, ok := serieLRemap[c]; ok {
+			b[i] = r
+		}
+	}
 }
 
 // cp1250Extra maps the non-ASCII runes common in Polish (and nearby Central
