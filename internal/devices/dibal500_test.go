@@ -59,4 +59,15 @@ func TestBuildL2Register(t *testing.T) {
 	if string(dk[13:16]) != "007" {
 		t.Errorf("direct key = %q, want 007", string(dk[13:16]))
 	}
+
+	// Polish name is encoded to Windows-1250 (one byte per char), not UTF-8
+	pl, _ := BuildL2Register(Dibal500PLU{Code: "9", Name: "Łosoś"})
+	wantName := []byte{0xA3, 'o', 's', 'o', 0x9C} // Ł o s o ś
+	if got := pl[16 : 16+len(wantName)]; string(got) != string(wantName) {
+		t.Errorf("CP1250 name = % X, want % X", got, wantName)
+	}
+	// 5 chars -> 5 bytes, then spaces
+	if pl[16+5] != ' ' {
+		t.Errorf("CP1250 name not space-padded after 5 bytes")
+	}
 }

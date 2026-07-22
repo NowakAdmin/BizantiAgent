@@ -153,17 +153,45 @@ func directKeyField(key string) []byte {
 	return []byte(fmt.Sprintf("%03d", n%1000))
 }
 
-// textField encodes a name field to fixed width, space-padded.
-// ponytail: ASCII/Latin passthrough for now; Polish→scale codepage (TransformarTextos2)
-// is a follow-up once the ASCII path is confirmed on hardware.
+// textField encodes a name field to fixed width, space-padded, in the scale's
+// code page (Windows-1250). The scale renders text in the PC's ANSI code page
+// (TransformarTextos2 → ANSICodePage), which is CP1250 on a Polish Windows —
+// matching the Dibal manual's Polish character table.
 func textField(s string, width int) []byte {
 	out := make([]byte, width)
 	fillSpaces(out)
-	b := []byte(strings.TrimSpace(s))
+	b := cp1250Encode(strings.TrimSpace(s))
 	if len(b) > width {
 		b = b[:width]
 	}
 	copy(out, b)
+	return out
+}
+
+// cp1250Extra maps the non-ASCII runes common in Polish (and nearby Central
+// European) product names to their Windows-1250 byte. ASCII passes through
+// unchanged; any other non-ASCII rune becomes '?'.
+var cp1250Extra = map[rune]byte{
+	'Ą': 0xA5, 'Ć': 0xC6, 'Ę': 0xCA, 'Ł': 0xA3, 'Ń': 0xD1, 'Ó': 0xD3, 'Ś': 0x8C, 'Ż': 0xAF, 'Ź': 0x8F,
+	'ą': 0xB9, 'ć': 0xE6, 'ę': 0xEA, 'ł': 0xB3, 'ń': 0xF1, 'ó': 0xF3, 'ś': 0x9C, 'ż': 0xBF, 'ź': 0x9F,
+	'Ä': 0xC4, 'Ö': 0xD6, 'Ü': 0xDC, 'ä': 0xE4, 'ö': 0xF6, 'ü': 0xFC, 'ß': 0xDF,
+	'°': 0xB0, '§': 0xA7, '€': 0x80,
+}
+
+func cp1250Encode(s string) []byte {
+	out := make([]byte, 0, len(s))
+	for _, r := range s {
+		switch {
+		case r >= 0x20 && r < 0x7f:
+			out = append(out, byte(r))
+		default:
+			if b, ok := cp1250Extra[r]; ok {
+				out = append(out, b)
+			} else {
+				out = append(out, '?')
+			}
+		}
+	}
 	return out
 }
 
