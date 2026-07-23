@@ -162,6 +162,42 @@ func TestBuildX4Registers(t *testing.T) {
 	}
 }
 
+func TestBuildL3Register(t *testing.T) {
+	days := 14
+	reg, err := BuildL3Register(Dibal500PLU{Code: "5", LabelNum: "3"}, days)
+	if err != nil {
+		t.Fatalf("build error: %v", err)
+	}
+	if len(reg) != 130 {
+		t.Fatalf("length = %d, want 130", len(reg))
+	}
+
+	cases := []struct {
+		off  int
+		want string
+	}{
+		{0, "00"},      // logical address default
+		{2, "L3"},      // register type
+		{4, "00"},      // group default
+		{6, "000005"},  // code, 6 digits
+		{12, "0"},      // sale mode default
+		{13, "000014"}, // shelf-life days, 6 digits
+		{38, "03"},     // label format number
+		{44, "0001"},   // section default
+	}
+	for _, c := range cases {
+		got := string(reg[c.off : c.off+len(c.want)])
+		if got != c.want {
+			t.Errorf("offset %d = %q, want %q", c.off, got, c.want)
+		}
+	}
+
+	// Everything not explicitly tracked defaults to ASCII zero, not spaces.
+	if reg[19] != '0' || reg[36] != '0' || reg[129] != '0' {
+		t.Errorf("untracked fields not zero-filled: [19]=%c [36]=%c [129]=%c", reg[19], reg[36], reg[129])
+	}
+}
+
 func TestBuildArticleRegisters(t *testing.T) {
 	regs, err := BuildArticleRegisters(Dibal500PLU{
 		Code:        "1",
@@ -182,8 +218,26 @@ func TestBuildArticleRegisters(t *testing.T) {
 		t.Errorf("register 1 type = %q, want X4", string(regs[1][2:4]))
 	}
 
-	// Delete operations don't touch X4 (nothing to sync).
-	del, err := BuildArticleRegisters(Dibal500PLU{Mode: "B", Code: "1"})
+	// ShelfLifeDays set -> L3 is appended as a third register.
+	days := 7
+	withExpiry, err := BuildArticleRegisters(Dibal500PLU{
+		Code:          "1",
+		Name:          "Produkt",
+		PriceGrosze:   100,
+		ShelfLifeDays: &days,
+	})
+	if err != nil {
+		t.Fatalf("build error: %v", err)
+	}
+	if len(withExpiry) != 3 {
+		t.Fatalf("got %d registers, want 3 (L2 + X4 + L3)", len(withExpiry))
+	}
+	if string(withExpiry[2][2:4]) != "L3" {
+		t.Errorf("register 2 type = %q, want L3", string(withExpiry[2][2:4]))
+	}
+
+	// Delete operations don't touch X4 or L3 (nothing to sync).
+	del, err := BuildArticleRegisters(Dibal500PLU{Mode: "B", Code: "1", ShelfLifeDays: &days})
 	if err != nil {
 		t.Fatalf("build delete error: %v", err)
 	}

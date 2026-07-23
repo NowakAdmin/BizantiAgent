@@ -61,6 +61,12 @@ type Dibal500PLU struct {
 	LogicalAddr string `json:"logical_addr,omitempty"` // scale logical address (default "00")
 	Group       string `json:"group,omitempty"`        // group/department (default "00")
 	Composition string `json:"composition,omitempty"`  // free text (ingredients/composition), rendered as X4 pages
+	LabelNum    string `json:"label_num,omitempty"`    // on-scale label format number (L3 FormatoEtiquetaSerieL); default "01"
+
+	// ShelfLifeDays triggers the L3 register (shelf-life + other article
+	// attributes) when non-nil. Left nil, L3 is never sent — see
+	// BuildL3Register for why L3 carries real risk beyond shelf-life.
+	ShelfLifeDays *int `json:"shelf_life_days,omitempty"`
 }
 
 // BuildArticleRegisters renders every register needed to fully program an
@@ -82,6 +88,14 @@ func BuildArticleRegisters(plu Dibal500PLU) ([][]byte, error) {
 			return nil, err
 		}
 		registers = append(registers, x4...)
+
+		if plu.ShelfLifeDays != nil {
+			l3, err := BuildL3Register(plu, *plu.ShelfLifeDays)
+			if err != nil {
+				return nil, err
+			}
+			registers = append(registers, l3)
+		}
 	}
 
 	return registers, nil
@@ -327,4 +341,65 @@ func fillSpaces(b []byte) {
 	for i := range b {
 		b[i] = ' '
 	}
+}
+
+func fillZeros(b []byte) {
+	for i := range b {
+		b[i] = '0'
+	}
+}
+
+// BuildL3Register renders the "extra attributes" L3 register — reverse
+// engineered from ComunicacionesBalPC.GenerarL3_EnBytes (SERIE_L path). L3 is
+// a full-record register like L2: besides shelf-life days it also carries
+// sale mode, fixed/percentage tare, VAT slot, section, and the SERIE_L label
+// format selector — sending it replaces ALL of these at once. We only
+// maintain the fields Bizanti actually tracks (shelf-life, label format) and
+// default everything else to a neutral zero, confirmed safe for tare only
+// because this deployment never sets tare on the scale's own keypad.
+//
+// ponytail: sale mode (byte [12], hardcoded "0" = best-guess weight-based
+// default) has no source of truth in Bizanti — Dibal's IdTipo catalog is
+// internal to DFS. Verify on a throwaway test article before trusting this
+// for real weighed products: confirm the printed price still multiplies by
+// weight (not a fixed unit price) after this register is sent. If wrong,
+// this needs a real mapping, not a wider default guess.
+func BuildL3Register(plu Dibal500PLU, shelfLifeDays int) ([]byte, error) {
+	buf := make([]byte, Dibal500RegisterLen)
+	fillZeros(buf)
+
+	copy(buf[0:2], pad2Digits(plu.LogicalAddr))
+	buf[2] = 'L'
+	buf[3] = '3'
+	copy(buf[4:6], pad2Digits(plu.Group))
+
+	code, err := numericField(plu.Code, 6)
+	if err != nil {
+		return nil, fmt.Errorf("kod artykułu: %w", err)
+	}
+	copy(buf[6:12], code)
+
+	buf[12] = '0' // sale mode: weight-based default — see doc comment above
+
+	expiry, err := intField(shelfLifeDays, 6)
+	if err != nil {
+		return nil, fmt.Errorf("termin ważności: %w", err)
+	}
+	copy(buf[13:19], expiry)
+
+	// [19:31] extra date + packaging date: unused, left zero.
+	// [31:38] fixed + percentage tare: zero (confirmed safe — no manual tare in use).
+
+	labelNum, err := numericField(plu.LabelNum, 2)
+	if err != nil {
+		return nil, fmt.Errorf("numer formatu etykiety: %w", err)
+	}
+	copy(buf[38:40], labelNum)
+
+	// [40:44] barcode format id + fixed literal: unused, left zero.
+	copy(buf[44:48], []byte("0001")) // section: default 1
+	// [48:130] VAT slot, smiley, class, associated element, recipe, logo,
+	// reserved, price-override flag: all unused, left zero.
+
+	return buf, nil
 }
