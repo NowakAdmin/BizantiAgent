@@ -950,8 +950,9 @@ func (a *Agent) executeCommand(command string, rawPayload json.RawMessage) (map[
 	}
 }
 
-// programDibal500 builds the L2 article register and hands it to the 32-bit
-// dibalcom-bridge, which reuses Dibal's native commL.dll to reach the scale.
+// programDibal500 builds the article registers (L2 core record plus any X4
+// composition pages) and hands them to the 32-bit dibalcom-bridge, which
+// reuses Dibal's native commL.dll to send them all over one connection.
 func (a *Agent) programDibal500(payload devices.Dibal500ProgramPayload) (map[string]any, error) {
 	scaleIP := strings.TrimSpace(payload.ScaleIP)
 	if scaleIP == "" {
@@ -968,9 +969,9 @@ func (a *Agent) programDibal500(payload devices.Dibal500ProgramPayload) (map[str
 		timeout = 3000
 	}
 
-	register, err := devices.BuildL2Register(payload.PLU)
+	registers, err := devices.BuildArticleRegisters(payload.PLU)
 	if err != nil {
-		return nil, fmt.Errorf("budowa rejestru L2: %w", err)
+		return nil, fmt.Errorf("budowa rejestrów artykułu: %w", err)
 	}
 
 	pcIP := strings.TrimSpace(payload.PCIP)
@@ -990,7 +991,7 @@ func (a *Agent) programDibal500(payload devices.Dibal500ProgramPayload) (map[str
 	a.dibal500Mu.Lock()
 	defer a.dibal500Mu.Unlock()
 
-	a.logger.Printf("program_dibal_plu_500: PLU=%s '%s' -> waga %s:%d (PC %s)", payload.PLU.Code, payload.PLU.Name, scaleIP, scalePort, pcIP)
+	a.logger.Printf("program_dibal_plu_500: PLU=%s '%s' (%d rejestrów) -> waga %s:%d (PC %s)", payload.PLU.Code, payload.PLU.Name, len(registers), scaleIP, scalePort, pcIP)
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout+5000)*time.Millisecond)
 	defer cancel()
@@ -1000,19 +1001,30 @@ func (a *Agent) programDibal500(payload devices.Dibal500ProgramPayload) (map[str
 		transformArg = "1"
 	}
 
+	var stdin bytes.Buffer
+	for _, reg := range registers {
+		stdin.WriteString(hex.EncodeToString(reg))
+		stdin.WriteByte('\n')
+	}
+
 	cmd := exec.CommandContext(ctx, bridge,
 		scaleIP, strconv.Itoa(scalePort),
 		pcIP, strconv.Itoa(scalePort),
-		hex.EncodeToString(register), strconv.Itoa(timeout),
-		transformArg,
+		strconv.Itoa(timeout), transformArg,
 	)
+	cmd.Stdin = &stdin
 	out, runErr := cmd.Output()
 
 	var res struct {
-		OK     bool   `json:"ok"`
-		Stage  string `json:"stage"`
-		Result int    `json:"result"`
-		Error  string `json:"error"`
+		OK    bool   `json:"ok"`
+		Stage string `json:"stage"`
+		Error string `json:"error"`
+
+		Registers []struct {
+			Index  int  `json:"index"`
+			OK     bool `json:"ok"`
+			Result int  `json:"result"`
+		} `json:"registers"`
 	}
 	_ = json.Unmarshal(bytes.TrimSpace(out), &res)
 
@@ -1024,15 +1036,16 @@ func (a *Agent) programDibal500(payload devices.Dibal500ProgramPayload) (map[str
 		if detail == "" && runErr != nil {
 			detail = runErr.Error()
 		}
-		return nil, fmt.Errorf("dibalcom-bridge nie zaprogramował PLU (stage=%s result=%d): %s", res.Stage, res.Result, detail)
+		return nil, fmt.Errorf("dibalcom-bridge nie zaprogramował PLU (stage=%s, wysłano %d/%d rejestrów): %s", res.Stage, len(res.Registers), len(registers), detail)
 	}
 
-	a.logger.Printf("program_dibal_plu_500: PLU %s zaprogramowany pomyślnie", payload.PLU.Code)
+	a.logger.Printf("program_dibal_plu_500: PLU %s zaprogramowany pomyślnie (%d rejestrów)", payload.PLU.Code, len(registers))
 
 	return map[string]any{
-		"plu_code": payload.PLU.Code,
-		"plu_name": payload.PLU.Name,
-		"pc_ip":    pcIP,
+		"plu_code":  payload.PLU.Code,
+		"plu_name":  payload.PLU.Name,
+		"pc_ip":     pcIP,
+		"registers": len(registers),
 	}, nil
 }
 

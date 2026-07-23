@@ -71,3 +71,123 @@ func TestBuildL2Register(t *testing.T) {
 		t.Errorf("CP1250 name not space-padded after 5 bytes")
 	}
 }
+
+func TestBuildX4Registers(t *testing.T) {
+	// Empty text still yields exactly one ESC-only page (clears stale text).
+	empty, err := BuildX4Registers("00", "00", "1", "")
+	if err != nil {
+		t.Fatalf("build error: %v", err)
+	}
+	if len(empty) != 1 {
+		t.Fatalf("empty text: got %d pages, want 1", len(empty))
+	}
+	if got := string(empty[0][0:14]); got != "00X400"+"000001"+"01" {
+		t.Errorf("empty page header = %q", got)
+	}
+	if empty[0][14] != 0x1B {
+		t.Errorf("empty page: byte 14 = %d, want ESC (27)", empty[0][14])
+	}
+	for i := 15; i < 130; i++ {
+		if empty[0][i] != ' ' {
+			t.Fatalf("empty page: byte %d = %d, want space", i, empty[0][i])
+		}
+	}
+
+	// Short text: one page, text then ESC then spaces.
+	short, err := BuildX4Registers("00", "00", "2", "Mleko, cukier")
+	if err != nil {
+		t.Fatalf("build error: %v", err)
+	}
+	if len(short) != 1 {
+		t.Fatalf("short text: got %d pages, want 1", len(short))
+	}
+	wantText := "Mleko, cukier"
+	if got := string(short[0][14 : 14+len(wantText)]); got != wantText {
+		t.Errorf("short text content = %q, want %q", got, wantText)
+	}
+	if short[0][14+len(wantText)] != 0x1B {
+		t.Errorf("short text: no ESC terminator after text")
+	}
+
+	// Exact multiple of the 116-byte chunk size: full page with no ESC, plus
+	// a trailing ESC-only page.
+	exact := make([]byte, x4ChunkSize)
+	for i := range exact {
+		exact[i] = 'A'
+	}
+	pages, err := BuildX4Registers("00", "00", "3", string(exact))
+	if err != nil {
+		t.Fatalf("build error: %v", err)
+	}
+	if len(pages) != 2 {
+		t.Fatalf("exact multiple: got %d pages, want 2", len(pages))
+	}
+	if got := string(pages[0][12:14]); got != "01" {
+		t.Errorf("page 1 number = %q, want 01", got)
+	}
+	for i := 14; i < 130; i++ {
+		if pages[0][i] != 'A' {
+			t.Fatalf("page 1: byte %d = %d, want 'A' (no ESC expected)", i, pages[0][i])
+		}
+	}
+	if got := string(pages[1][12:14]); got != "02" {
+		t.Errorf("page 2 number = %q, want 02", got)
+	}
+	if pages[1][14] != 0x1B {
+		t.Errorf("page 2: byte 14 = %d, want ESC (27)", pages[1][14])
+	}
+
+	// Long text respects the SERIE_L cap and doesn't error.
+	long := make([]byte, x4MaxTextBytes+500)
+	for i := range long {
+		long[i] = 'B'
+	}
+	capped, err := BuildX4Registers("00", "00", "4", string(long))
+	if err != nil {
+		t.Fatalf("build error: %v", err)
+	}
+	totalTextBytes := 0
+	for _, p := range capped {
+		for i := 14; i < 130; i++ {
+			if p[i] == 0x1B {
+				break
+			}
+			if p[i] == 'B' {
+				totalTextBytes++
+			}
+		}
+	}
+	if totalTextBytes != x4MaxTextBytes {
+		t.Errorf("capped text bytes = %d, want %d", totalTextBytes, x4MaxTextBytes)
+	}
+}
+
+func TestBuildArticleRegisters(t *testing.T) {
+	regs, err := BuildArticleRegisters(Dibal500PLU{
+		Code:        "1",
+		Name:        "Produkt",
+		PriceGrosze: 100,
+		Composition: "Mleko",
+	})
+	if err != nil {
+		t.Fatalf("build error: %v", err)
+	}
+	if len(regs) != 2 {
+		t.Fatalf("got %d registers, want 2 (L2 + one X4 page)", len(regs))
+	}
+	if string(regs[0][2:4]) != "L2" {
+		t.Errorf("register 0 type = %q, want L2", string(regs[0][2:4]))
+	}
+	if string(regs[1][2:4]) != "X4" {
+		t.Errorf("register 1 type = %q, want X4", string(regs[1][2:4]))
+	}
+
+	// Delete operations don't touch X4 (nothing to sync).
+	del, err := BuildArticleRegisters(Dibal500PLU{Mode: "B", Code: "1"})
+	if err != nil {
+		t.Fatalf("build delete error: %v", err)
+	}
+	if len(del) != 1 {
+		t.Fatalf("delete: got %d registers, want 1 (L2 only)", len(del))
+	}
+}

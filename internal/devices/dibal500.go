@@ -60,6 +60,31 @@ type Dibal500PLU struct {
 	Reference   int    `json:"reference,omitempty"`    // reference number (9 digits)
 	LogicalAddr string `json:"logical_addr,omitempty"` // scale logical address (default "00")
 	Group       string `json:"group,omitempty"`        // group/department (default "00")
+	Composition string `json:"composition,omitempty"`  // free text (ingredients/composition), rendered as X4 pages
+}
+
+// BuildArticleRegisters renders every register needed to fully program an
+// article: the L2 core record plus the X4 free-text pages. X4 is always
+// included (even with empty text) so a shorter/removed composition clears any
+// stale pages left by a previous, longer push — matching the original DFS
+// behavior of syncing this field on every article update.
+func BuildArticleRegisters(plu Dibal500PLU) ([][]byte, error) {
+	l2, err := BuildL2Register(plu)
+	if err != nil {
+		return nil, err
+	}
+
+	registers := [][]byte{l2}
+
+	if strings.ToUpper(strings.TrimSpace(plu.Mode)) != "B" {
+		x4, err := BuildX4Registers(plu.LogicalAddr, plu.Group, plu.Code, plu.Composition)
+		if err != nil {
+			return nil, err
+		}
+		registers = append(registers, x4...)
+	}
+
+	return registers, nil
 }
 
 // BuildL2Register renders the 130-byte L2 article register for the scale.
@@ -126,6 +151,83 @@ func BuildL2Register(plu Dibal500PLU) ([]byte, error) {
 	fillSpaces(buf[124:130])
 
 	return buf, nil
+}
+
+// x4ChunkSize is the text payload per X4 page; x4MaxTextBytes is the SERIE_L
+// (500-series) cap on total composition/free-text length, both reverse-
+// engineered from ComunicacionesBalPC.GenerarX4_EnBytes.
+const (
+	x4ChunkSize    = 116
+	x4MaxTextBytes = 1200
+)
+
+// BuildX4Registers renders the "free text" (G Text) pages used for long text
+// such as an ingredient/composition list. Reverse-engineered from
+// GenerarX4_EnBytes (SERIE_L path — the 500-series, not the Chinese-market
+// branch). Byte layout per 130-byte page:
+//
+//	[0:2]   DireccionLogica — same as the article's L2 register
+//	[2:4]   register type "X4"
+//	[4:6]   Grupo — same as the article's L2 register
+//	[6:12]  article code — zero-padded 6 digits (same article as L2)
+//	[12:14] page number — zero-padded 2 digits, 1-indexed
+//	[14:130] up to 116 bytes of raw Windows-1250 text
+//
+// Text is chunked at 116 bytes per page with no word-wrapping (matching the
+// original). The page holding the final (possibly empty) chunk is terminated
+// with an ESC (0x1B) byte right after the text, then space-padded — so an
+// exact multiple of 116 bytes still gets one trailing empty ESC-only page,
+// and empty text yields a single ESC-only page. This always produces at
+// least one page, which is what lets a shorter update clear stale trailing
+// pages from a previous, longer composition.
+func BuildX4Registers(logicalAddr, group, code, text string) ([][]byte, error) {
+	codeBytes, err := numericField(code, 6)
+	if err != nil {
+		return nil, fmt.Errorf("kod artykułu: %w", err)
+	}
+
+	encoded := cp1250Encode(strings.TrimSpace(text))
+	if len(encoded) > x4MaxTextBytes {
+		encoded = encoded[:x4MaxTextBytes]
+	}
+
+	logicalBytes := pad2Digits(logicalAddr)
+	groupBytes := pad2Digits(group)
+
+	var registers [][]byte
+	page := 1
+	pos := 0
+
+	for {
+		if page > 99 {
+			return nil, fmt.Errorf("tekst składu zbyt długi (przekroczono 99 stron)")
+		}
+
+		reg := make([]byte, Dibal500RegisterLen)
+		copy(reg[0:2], logicalBytes)
+		reg[2] = 'X'
+		reg[3] = '4'
+		copy(reg[4:6], groupBytes)
+		copy(reg[6:12], codeBytes)
+		copy(reg[12:14], []byte(fmt.Sprintf("%02d", page)))
+
+		remaining := len(encoded) - pos
+		if remaining >= x4ChunkSize {
+			copy(reg[14:14+x4ChunkSize], encoded[pos:pos+x4ChunkSize])
+			registers = append(registers, reg)
+			pos += x4ChunkSize
+			page++
+			continue
+		}
+
+		copy(reg[14:14+remaining], encoded[pos:pos+remaining])
+		reg[14+remaining] = 0x1B // ESC marks end of text
+		fillSpaces(reg[14+remaining+1:])
+		registers = append(registers, reg)
+		break
+	}
+
+	return registers, nil
 }
 
 // pad2Digits normalises a 2-digit ASCII field (logical address / group).
