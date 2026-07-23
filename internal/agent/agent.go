@@ -70,6 +70,11 @@ type Agent struct {
 	// to the PC; a per-job listener would always time out.
 	dibalMu       sync.Mutex
 	dibalManagers map[string]*devices.DibalManager
+
+	// Serializes Dibal 500-series pushes. Commands run concurrently, but the
+	// scale is a single TCP endpoint — parallel connections clash, so PLU
+	// programming for a batch of labels must go one at a time.
+	dibal500Mu sync.Mutex
 }
 
 func New(cfg *config.Config, logger *log.Logger) *Agent {
@@ -980,6 +985,10 @@ func (a *Agent) programDibal500(payload devices.Dibal500ProgramPayload) (map[str
 	if err != nil {
 		return nil, err
 	}
+
+	// One scale, one TCP endpoint: serialize concurrent batch pushes.
+	a.dibal500Mu.Lock()
+	defer a.dibal500Mu.Unlock()
 
 	a.logger.Printf("program_dibal_plu_500: PLU=%s '%s' -> waga %s:%d (PC %s)", payload.PLU.Code, payload.PLU.Name, scaleIP, scalePort, pcIP)
 
