@@ -216,6 +216,22 @@ func TestBuildL3Register(t *testing.T) {
 	if got := string(withEAN[40:42]); got != "01" {
 		t.Errorf("barcode format slot = %q, want 01 when EAN is set", got)
 	}
+
+	// Frozen date present -> written as DDMMYY at [25:31]; absent -> zeros.
+	withFrozen, err := BuildL3Register(Dibal500PLU{Code: "5", FrozenDate: "230724"}, nil)
+	if err != nil {
+		t.Fatalf("build error: %v", err)
+	}
+	if got := string(withFrozen[25:31]); got != "230724" {
+		t.Errorf("frozen date = %q, want 230724", got)
+	}
+	noFrozen, err := BuildL3Register(Dibal500PLU{Code: "5"}, nil)
+	if err != nil {
+		t.Fatalf("build error: %v", err)
+	}
+	if got := string(noFrozen[25:31]); got != "000000" {
+		t.Errorf("no frozen date = %q, want 000000", got)
+	}
 }
 
 func TestBuildArticleRegisters(t *testing.T) {
@@ -281,6 +297,23 @@ func TestBuildArticleRegisters(t *testing.T) {
 	}
 	if string(withEAN[8][2:4]) != "L3" {
 		t.Errorf("last register type = %q, want L3", string(withEAN[8][2:4]))
+	}
+
+	// FrozenDate alone also triggers L3.
+	withFrozen, err := BuildArticleRegisters(Dibal500PLU{
+		Code:        "1",
+		Name:        "Produkt",
+		PriceGrosze: 100,
+		FrozenDate:  "230724",
+	})
+	if err != nil {
+		t.Fatalf("build error: %v", err)
+	}
+	if len(withFrozen) != 9 {
+		t.Fatalf("got %d registers, want 9 (L2 + X4 + 5×L4 + AS + L3)", len(withFrozen))
+	}
+	if string(withFrozen[8][2:4]) != "L3" {
+		t.Errorf("last register type = %q, want L3", string(withFrozen[8][2:4]))
 	}
 
 	// Delete operations don't touch X4, L4, AS or L3 (nothing to sync).

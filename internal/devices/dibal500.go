@@ -69,7 +69,8 @@ type Dibal500PLU struct {
 	// ShelfLifeDays triggers the L3 register (shelf-life + other article
 	// attributes) when non-nil. Left nil, L3 is never sent — see
 	// BuildL3Register for why L3 carries real risk beyond shelf-life.
-	ShelfLifeDays *int `json:"shelf_life_days,omitempty"`
+	ShelfLifeDays *int   `json:"shelf_life_days,omitempty"`
+	FrozenDate    string `json:"frozen_date,omitempty"` // DDMMYY (6 digits); also triggers L3 when set
 }
 
 // BuildArticleRegisters renders every register needed to fully program an
@@ -104,9 +105,9 @@ func BuildArticleRegisters(plu Dibal500PLU) ([][]byte, error) {
 		}
 		registers = append(registers, as)
 
-		// L3 also carries the barcode-format slot needed for a fixed EAN
-		// (see BuildL3Register), so send it whenever either is set.
-		if plu.ShelfLifeDays != nil || strings.TrimSpace(plu.EAN) != "" {
+		// L3 also carries the barcode-format slot (for a fixed EAN) and the
+		// freezing date, so send it whenever any of the three is set.
+		if plu.ShelfLifeDays != nil || strings.TrimSpace(plu.EAN) != "" || strings.TrimSpace(plu.FrozenDate) != "" {
 			l3, err := BuildL3Register(plu, plu.ShelfLifeDays)
 			if err != nil {
 				return nil, err
@@ -559,7 +560,24 @@ func BuildL3Register(plu Dibal500PLU, shelfLifeDays *int) ([]byte, error) {
 	}
 	copy(buf[13:19], expiry)
 
-	// [19:31] extra date + packaging date: unused, left zero.
+	// [19:25] extra date: unused, left zero.
+
+	// [25:31] packaging/freezing date (FechaEnvasado in the original DFS
+	// schema — matches "data zamrożenia" on the scale). Written as DDMMYY
+	// (6 ASCII digits, no separators) when provided, "000000" otherwise.
+	// ponytail: there's no register bit that selects date-vs-days-count mode
+	// for this field (the original picks it from an external DB setting we
+	// don't control) — writing a literal date here is a best guess matching
+	// the field's name; verify on hardware that it renders as a date, not a
+	// day-count, and adjust if wrong.
+	if fd := strings.TrimSpace(plu.FrozenDate); fd != "" {
+		frozen, err := numericField(fd, 6)
+		if err != nil {
+			return nil, fmt.Errorf("data zamrożenia: %w", err)
+		}
+		copy(buf[25:31], frozen)
+	}
+
 	// [31:38] fixed + percentage tare: zero (confirmed safe — no manual tare in use).
 
 	labelNum, err := numericField(plu.LabelNum, 2)
