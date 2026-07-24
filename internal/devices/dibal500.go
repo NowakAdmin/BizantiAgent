@@ -63,6 +63,7 @@ type Dibal500PLU struct {
 	Group       string `json:"group,omitempty"`        // group/department (default "00")
 	Composition string `json:"composition,omitempty"`  // ingredients/composition; sent as both L4 (Article Text Lines — confirmed on hardware to be what factory formats print) and X4 (G Text, in case a format uses that instead)
 	EAN         string `json:"ean,omitempty"`          // fixed EAN-13 to print (AS register); printing it may also require the label format's barcode field to be configured for "fixed EAN" rather than the scale's auto-computed weight/price barcode — a DLD/scale-side setting, not something this register alone controls
+	BarcodeSlot string `json:"barcode_slot,omitempty"` // L3 IdCodBarras override (1-10, KONF. EANC01..EANC10); defaults to "01" when EAN is set — untested which slot means "use article's fixed EAN" vs the scale's built-in auto-computed one
 	LabelNum    string `json:"label_num,omitempty"`    // on-scale label format number (L3 FormatoEtiquetaSerieL); default "01". Only takes effect once GLOBALNY FORMAT ETYKIETY (Global Label Format) is set to 0 on the scale (MENU > Printing Parameters) — otherwise the scale always prints its global format regardless of this field.
 
 	// ShelfLifeDays triggers the L3 register (shelf-life + other article
@@ -533,13 +534,20 @@ func BuildL3Register(plu Dibal500PLU, shelfLifeDays *int) ([]byte, error) {
 	}
 	copy(buf[38:40], labelNum)
 
-	// Barcode format slot (1-10): "01" enables the article's fixed EAN (AS
-	// register) on formats bound to it; "00" leaves barcode printing on
-	// whatever the format/scale defaults to (typically an auto-computed
-	// weight/price code). Untested which of the 10 slots is "correct" beyond
-	// slot 1 — verify on hardware; the scale's own KONF. EANC01..EANC10 menu
-	// may need slot 1 configured for "fixed article EAN" mode too.
-	if strings.TrimSpace(plu.EAN) != "" {
+	// Barcode format slot (1-10, KONF. EANC01..EANC10 on the scale): defaults
+	// to "01" when EAN is set, overridable via plu.BarcodeSlot for testing
+	// which slot actually means "use the article's fixed EAN" — hardware
+	// testing showed slot 01 still prints the scale's auto-computed
+	// weight/price code, so slot 1 may be hardwired to "auto" and a
+	// different slot (or reconfiguring slot 1 on the scale itself) may be
+	// needed. "00" leaves barcode printing on whatever default applies.
+	if slot := strings.TrimSpace(plu.BarcodeSlot); slot != "" {
+		slotBytes, err := numericField(slot, 2)
+		if err != nil {
+			return nil, fmt.Errorf("slot kodu kreskowego: %w", err)
+		}
+		copy(buf[40:42], slotBytes)
+	} else if strings.TrimSpace(plu.EAN) != "" {
 		copy(buf[40:42], []byte("01"))
 	}
 
