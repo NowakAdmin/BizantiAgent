@@ -28,14 +28,17 @@ import (
 )
 
 type registerResult struct {
-	Index  int  `json:"index"`
-	OK     bool `json:"ok"`
-	Result int  `json:"result"`
+	Index    int    `json:"index"`
+	OK       bool   `json:"ok"`
+	Result   int    `json:"result"`
+	EchoHex  string `json:"echo_hex,omitempty"`
+	EchoLen  int    `json:"echo_len,omitempty"`
+	EchoCode int    `json:"echo_code,omitempty"`
 }
 
 func main() {
 	if len(os.Args) < 5 {
-		fail("usage: dibalcom-bridge <scaleIP> <scalePort> <pcIP> <pcPort> [timeoutMs] [transform] < registers.hex")
+		fail("usage: dibalcom-bridge <scaleIP> <scalePort> <pcIP> <pcPort> [timeoutMs] [transform] [echoTest] < registers.hex")
 	}
 
 	scaleIP := os.Args[1]
@@ -56,6 +59,12 @@ func main() {
 	if len(os.Args) >= 7 && os.Args[6] == "1" {
 		transform = 1
 	}
+
+	// echoTest: diagnostic-only. When "1", attempt a ReadRegisterWEx2 right
+	// after each successful send, on the same handle, to see whether the
+	// scale echoes back the just-written bytes — lets us compare sent vs.
+	// stored content electronically instead of reading it off a printout.
+	echoTest := len(os.Args) >= 8 && os.Args[7] == "1"
 
 	registers, err := readRegisters(os.Stdin)
 	if err != nil {
@@ -82,6 +91,14 @@ func main() {
 		fail("brak eksportu SendRegisterWEx3: " + err.Error())
 	}
 	closeProc, _ := dll.FindProc("ClientCloseWEx2")
+
+	var readProc *syscall.Proc
+	if echoTest {
+		readProc, err = dll.FindProc("ReadRegisterWEx2")
+		if err != nil {
+			fail("brak eksportu ReadRegisterWEx2: " + err.Error())
+		}
+	}
 
 	// commL.dll takes C strings for addresses and a UTF-16 log path; an empty
 	// (single-NUL) log buffer disables logging.
@@ -128,7 +145,28 @@ func main() {
 		)
 		result := int32(r)
 		ok := result == 1
-		results = append(results, registerResult{Index: i, OK: ok, Result: int(result)})
+		rr := registerResult{Index: i, OK: ok, Result: int(result)}
+
+		if ok && readProc != nil {
+			echoBuf := make([]byte, 130)
+			echoLen := make([]int32, 1)
+			// int ReadRegisterWEx2(int handle, byte* buf, int* outLen, char* log, int timer, BOOL transform)
+			er, _, _ := readProc.Call(
+				uintptr(handle),
+				uintptr(unsafe.Pointer(&echoBuf[0])),
+				uintptr(unsafe.Pointer(&echoLen[0])),
+				uintptr(unsafe.Pointer(&emptyLog[0])),
+				uintptr(500), // short timeout — this is a best-effort peek, not a required ack
+				transform,
+			)
+			rr.EchoCode = int(int32(er))
+			rr.EchoLen = int(echoLen[0])
+			if echoLen[0] > 0 && int(echoLen[0]) <= len(echoBuf) {
+				rr.EchoHex = hex.EncodeToString(echoBuf[:echoLen[0]])
+			}
+		}
+
+		results = append(results, rr)
 		if !ok {
 			allOK = false
 			break // stop at the first failed register; nothing further would be consistent

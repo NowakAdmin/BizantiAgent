@@ -1001,6 +1001,11 @@ func (a *Agent) programDibal500(payload devices.Dibal500ProgramPayload) (map[str
 		transformArg = "1"
 	}
 
+	echoArg := "0"
+	if payload.EchoTest {
+		echoArg = "1"
+	}
+
 	var stdin bytes.Buffer
 	for _, reg := range registers {
 		stdin.WriteString(hex.EncodeToString(reg))
@@ -1010,7 +1015,7 @@ func (a *Agent) programDibal500(payload devices.Dibal500ProgramPayload) (map[str
 	cmd := exec.CommandContext(ctx, bridge,
 		scaleIP, strconv.Itoa(scalePort),
 		pcIP, strconv.Itoa(scalePort),
-		strconv.Itoa(timeout), transformArg,
+		strconv.Itoa(timeout), transformArg, echoArg,
 	)
 	cmd.Stdin = &stdin
 	out, runErr := cmd.Output()
@@ -1021,9 +1026,12 @@ func (a *Agent) programDibal500(payload devices.Dibal500ProgramPayload) (map[str
 		Error string `json:"error"`
 
 		Registers []struct {
-			Index  int  `json:"index"`
-			OK     bool `json:"ok"`
-			Result int  `json:"result"`
+			Index    int    `json:"index"`
+			OK       bool   `json:"ok"`
+			Result   int    `json:"result"`
+			EchoHex  string `json:"echo_hex,omitempty"`
+			EchoLen  int    `json:"echo_len,omitempty"`
+			EchoCode int    `json:"echo_code,omitempty"`
 		} `json:"registers"`
 	}
 	_ = json.Unmarshal(bytes.TrimSpace(out), &res)
@@ -1041,12 +1049,17 @@ func (a *Agent) programDibal500(payload devices.Dibal500ProgramPayload) (map[str
 
 	a.logger.Printf("program_dibal_plu_500: PLU %s zaprogramowany pomyślnie (%d rejestrów)", payload.PLU.Code, len(registers))
 
-	return map[string]any{
+	result := map[string]any{
 		"plu_code":  payload.PLU.Code,
 		"plu_name":  payload.PLU.Name,
 		"pc_ip":     pcIP,
 		"registers": len(registers),
-	}, nil
+	}
+	if payload.EchoTest {
+		result["echo"] = res.Registers
+	}
+
+	return result, nil
 }
 
 // dibalBridgePath returns the path to dibalcom-bridge.exe, expected next to the agent.

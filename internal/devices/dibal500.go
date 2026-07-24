@@ -43,6 +43,7 @@ type Dibal500ProgramPayload struct {
 	PCIP      string      `json:"pc_ip,omitempty"`
 	TimeoutMs int         `json:"timeout_ms,omitempty"`
 	Transform bool        `json:"transform,omitempty"` // commL.dll byte transform; false = raw CP1250 (correct for our path)
+	EchoTest  bool        `json:"echo_test,omitempty"` // diagnostic only: read back each register right after writing it
 	PLU       Dibal500PLU `json:"plu"`
 }
 
