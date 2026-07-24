@@ -1,6 +1,7 @@
 package devices
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -208,8 +209,9 @@ func TestBuildArticleRegisters(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build error: %v", err)
 	}
-	if len(regs) != 2 {
-		t.Fatalf("got %d registers, want 2 (L2 + one X4 page)", len(regs))
+	// L2 + one X4 page + five L4 registers (10 text-line slots).
+	if len(regs) != 7 {
+		t.Fatalf("got %d registers, want 7 (L2 + X4 + 5×L4)", len(regs))
 	}
 	if string(regs[0][2:4]) != "L2" {
 		t.Errorf("register 0 type = %q, want L2", string(regs[0][2:4]))
@@ -217,8 +219,13 @@ func TestBuildArticleRegisters(t *testing.T) {
 	if string(regs[1][2:4]) != "X4" {
 		t.Errorf("register 1 type = %q, want X4", string(regs[1][2:4]))
 	}
+	for i := 2; i < 7; i++ {
+		if string(regs[i][2:4]) != "L4" {
+			t.Errorf("register %d type = %q, want L4", i, string(regs[i][2:4]))
+		}
+	}
 
-	// ShelfLifeDays set -> L3 is appended as a third register.
+	// ShelfLifeDays set -> L3 is appended after L2+X4+5×L4.
 	days := 7
 	withExpiry, err := BuildArticleRegisters(Dibal500PLU{
 		Code:          "1",
@@ -229,19 +236,92 @@ func TestBuildArticleRegisters(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build error: %v", err)
 	}
-	if len(withExpiry) != 3 {
-		t.Fatalf("got %d registers, want 3 (L2 + X4 + L3)", len(withExpiry))
+	if len(withExpiry) != 8 {
+		t.Fatalf("got %d registers, want 8 (L2 + X4 + 5×L4 + L3)", len(withExpiry))
 	}
-	if string(withExpiry[2][2:4]) != "L3" {
-		t.Errorf("register 2 type = %q, want L3", string(withExpiry[2][2:4]))
+	if string(withExpiry[7][2:4]) != "L3" {
+		t.Errorf("last register type = %q, want L3", string(withExpiry[7][2:4]))
 	}
 
-	// Delete operations don't touch X4 or L3 (nothing to sync).
+	// Delete operations don't touch X4, L4 or L3 (nothing to sync).
 	del, err := BuildArticleRegisters(Dibal500PLU{Mode: "B", Code: "1", ShelfLifeDays: &days})
 	if err != nil {
 		t.Fatalf("build delete error: %v", err)
 	}
 	if len(del) != 1 {
 		t.Fatalf("delete: got %d registers, want 1 (L2 only)", len(del))
+	}
+}
+
+func TestBuildL4Registers(t *testing.T) {
+	// Short text: fills the first slot, everything else blank.
+	regs, err := BuildL4Registers("00", "00", "6", "Mleko, cukier")
+	if err != nil {
+		t.Fatalf("build error: %v", err)
+	}
+	if len(regs) != 5 {
+		t.Fatalf("got %d registers, want 5", len(regs))
+	}
+	if got := string(regs[0][12]); got != "0" {
+		t.Errorf("register 0 line-A marker = %q, want \"0\"", got)
+	}
+	wantLine := "Mleko, cukier"
+	if got := string(regs[0][13 : 13+len(wantLine)]); got != wantLine {
+		t.Errorf("line 1 content = %q, want %q", got, wantLine)
+	}
+	if regs[0][13+len(wantLine)] != ' ' {
+		t.Errorf("line 1 not space-padded after text")
+	}
+	if got := string(regs[0][67]); got != "1" {
+		t.Errorf("register 0 line-B marker = %q, want \"1\"", got)
+	}
+	// line 2 (slot B of register 0) is empty -> all spaces
+	for i := 68; i < 116; i++ {
+		if regs[0][i] != ' ' {
+			t.Fatalf("empty line-B: byte %d = %d, want space", i, regs[0][i])
+		}
+	}
+	// tail always zero-filled
+	for i := 116; i < 130; i++ {
+		if regs[0][i] != '0' {
+			t.Fatalf("tail: byte %d = %d, want '0'", i, regs[0][i])
+		}
+	}
+	// register markers increment 2/3, 4/5, 6/7, 8/9 across the 5 registers
+	for reg := 1; reg < 5; reg++ {
+		wantA := byte('0' + 2*reg)
+		wantB := byte('0' + 2*reg + 1)
+		if regs[reg][12] != wantA {
+			t.Errorf("register %d line-A marker = %c, want %c", reg, regs[reg][12], wantA)
+		}
+		if regs[reg][67] != wantB {
+			t.Errorf("register %d line-B marker = %c, want %c", reg, regs[reg][67], wantB)
+		}
+	}
+
+	// Long text spanning multiple 24-char lines.
+	long := strings.Repeat("A", 24) + strings.Repeat("B", 24) + "C"
+	multi, err := BuildL4Registers("00", "00", "7", long)
+	if err != nil {
+		t.Fatalf("build error: %v", err)
+	}
+	if got := string(multi[0][13:37]); got != strings.Repeat("A", 24) {
+		t.Errorf("line 1 = %q, want 24 A's", got)
+	}
+	if got := string(multi[0][68:92]); got != strings.Repeat("B", 24) {
+		t.Errorf("line 2 = %q, want 24 B's", got)
+	}
+	if multi[1][13] != 'C' {
+		t.Errorf("line 3 first byte = %c, want 'C'", multi[1][13])
+	}
+
+	// Text beyond 240 chars (10 lines x 24) is dropped, not an error.
+	tooLong := strings.Repeat("Z", 300)
+	capped, err := BuildL4Registers("00", "00", "8", tooLong)
+	if err != nil {
+		t.Fatalf("build error: %v", err)
+	}
+	if len(capped) != 5 {
+		t.Fatalf("got %d registers, want 5 even when input exceeds capacity", len(capped))
 	}
 }

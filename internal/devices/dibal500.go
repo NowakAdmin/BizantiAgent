@@ -60,8 +60,8 @@ type Dibal500PLU struct {
 	Reference   int    `json:"reference,omitempty"`    // reference number (9 digits)
 	LogicalAddr string `json:"logical_addr,omitempty"` // scale logical address (default "00")
 	Group       string `json:"group,omitempty"`        // group/department (default "00")
-	Composition string `json:"composition,omitempty"`  // free text (ingredients/composition), rendered as X4 pages
-	LabelNum    string `json:"label_num,omitempty"`    // on-scale label format number (L3 FormatoEtiquetaSerieL); default "01"
+	Composition string `json:"composition,omitempty"`  // ingredients/composition; sent as both L4 (Article Text Lines — confirmed on hardware to be what factory formats print) and X4 (G Text, in case a format uses that instead)
+	LabelNum    string `json:"label_num,omitempty"`    // on-scale label format number (L3 FormatoEtiquetaSerieL); default "01". Only takes effect once GLOBALNY FORMAT ETYKIETY (Global Label Format) is set to 0 on the scale (MENU > Printing Parameters) — otherwise the scale always prints its global format regardless of this field.
 
 	// ShelfLifeDays triggers the L3 register (shelf-life + other article
 	// attributes) when non-nil. Left nil, L3 is never sent — see
@@ -88,6 +88,12 @@ func BuildArticleRegisters(plu Dibal500PLU) ([][]byte, error) {
 			return nil, err
 		}
 		registers = append(registers, x4...)
+
+		l4, err := BuildL4Registers(plu.LogicalAddr, plu.Group, plu.Code, plu.Composition)
+		if err != nil {
+			return nil, err
+		}
+		registers = append(registers, l4...)
 
 		if plu.ShelfLifeDays != nil {
 			l3, err := BuildL3Register(plu, *plu.ShelfLifeDays)
@@ -347,6 +353,82 @@ func fillZeros(b []byte) {
 	for i := range b {
 		b[i] = '0'
 	}
+}
+
+// l4LineWidth is the wire slot width reserved per Article Text Line;
+// l4LineChars is the scale keypad's documented per-line character limit
+// (49-MH000PL04, step 18: "up to 10 lines of 24 characters"); l4MaxLines is
+// the total line count, packed 2 per 130-byte register (5 registers).
+const (
+	l4LineWidth = 48
+	l4LineChars = 24
+	l4MaxLines  = 10
+)
+
+// BuildL4Registers renders the "Article Text Lines" (Texto1..Texto10) —
+// reverse engineered from ComunicacionesBalPC.GenerarL4_EnBytes (SERIE_L
+// "modify" path) and confirmed against the scale's own manual (step 18: this
+// field explicitly supports "tekst, SKŁADNIKI" — free text or ingredients).
+// This is what the factory label formats' composition section actually
+// prints from — X4 (G Text) is a different, single free-flowing field that a
+// format may or may not use instead.
+//
+// Always renders all 5 registers (10 slots, blank if unused) so a shorter
+// composition clears stale trailing lines left by a previous, longer one —
+// same reasoning as X4. Text is split into <=24-character lines (hard cut,
+// no word-wrap) into up to 10 slots; anything beyond 240 characters total is
+// dropped.
+//
+// Register layout (2 lines per 130-byte register):
+//
+//	[0:2]   DireccionLogica; [2:4] "L4"; [4:6] Grupo
+//	[6:12]  article code; [12] line-A marker ('0','2','4','6','8')
+//	[13:61] line-A text, 48 bytes, space-padded
+//	[61:67] article code (repeated); [67] line-B marker ('1','3','5','7','9')
+//	[68:116] line-B text, 48 bytes, space-padded
+//	[116:130] zero-filled
+func BuildL4Registers(logicalAddr, group, code, text string) ([][]byte, error) {
+	codeBytes, err := numericField(code, 6)
+	if err != nil {
+		return nil, fmt.Errorf("kod artykułu: %w", err)
+	}
+
+	logicalBytes := pad2Digits(logicalAddr)
+	groupBytes := pad2Digits(group)
+
+	runes := []rune(strings.TrimSpace(text))
+	lines := make([]string, l4MaxLines)
+	for i := 0; i < l4MaxLines && len(runes) > 0; i++ {
+		end := l4LineChars
+		if end > len(runes) {
+			end = len(runes)
+		}
+		lines[i] = string(runes[:end])
+		runes = runes[end:]
+	}
+
+	registers := make([][]byte, 0, l4MaxLines/2)
+	for reg := 0; reg < l4MaxLines/2; reg++ {
+		buf := make([]byte, Dibal500RegisterLen)
+		fillZeros(buf)
+
+		copy(buf[0:2], logicalBytes)
+		buf[2] = 'L'
+		buf[3] = '4'
+		copy(buf[4:6], groupBytes)
+
+		copy(buf[6:12], codeBytes)
+		buf[12] = byte('0' + 2*reg)
+		copy(buf[13:61], textField(lines[2*reg], l4LineWidth))
+
+		copy(buf[61:67], codeBytes)
+		buf[67] = byte('0' + 2*reg + 1)
+		copy(buf[68:116], textField(lines[2*reg+1], l4LineWidth))
+
+		registers = append(registers, buf)
+	}
+
+	return registers, nil
 }
 
 // BuildL3Register renders the "extra attributes" L3 register — reverse
