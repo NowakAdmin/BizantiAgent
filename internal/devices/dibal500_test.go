@@ -165,7 +165,7 @@ func TestBuildX4Registers(t *testing.T) {
 
 func TestBuildL3Register(t *testing.T) {
 	days := 14
-	reg, err := BuildL3Register(Dibal500PLU{Code: "5", LabelNum: "3"}, days)
+	reg, err := BuildL3Register(Dibal500PLU{Code: "5", LabelNum: "3"}, &days)
 	if err != nil {
 		t.Fatalf("build error: %v", err)
 	}
@@ -184,6 +184,7 @@ func TestBuildL3Register(t *testing.T) {
 		{12, "0"},      // sale mode default
 		{13, "000014"}, // shelf-life days, 6 digits
 		{38, "03"},     // label format number
+		{40, "00"},     // barcode format slot: no EAN, stays off
 		{44, "0001"},   // section default
 	}
 	for _, c := range cases {
@@ -196,6 +197,24 @@ func TestBuildL3Register(t *testing.T) {
 	// Everything not explicitly tracked defaults to ASCII zero, not spaces.
 	if reg[19] != '0' || reg[36] != '0' || reg[129] != '0' {
 		t.Errorf("untracked fields not zero-filled: [19]=%c [36]=%c [129]=%c", reg[19], reg[36], reg[129])
+	}
+
+	// No shelf life set -> "000000", not an error.
+	noExpiry, err := BuildL3Register(Dibal500PLU{Code: "5"}, nil)
+	if err != nil {
+		t.Fatalf("build error: %v", err)
+	}
+	if got := string(noExpiry[13:19]); got != "000000" {
+		t.Errorf("no-expiry days = %q, want 000000", got)
+	}
+
+	// EAN present -> barcode format slot 01 enabled.
+	withEAN, err := BuildL3Register(Dibal500PLU{Code: "5", EAN: "5901234123457"}, nil)
+	if err != nil {
+		t.Fatalf("build error: %v", err)
+	}
+	if got := string(withEAN[40:42]); got != "01" {
+		t.Errorf("barcode format slot = %q, want 01 when EAN is set", got)
 	}
 }
 
@@ -244,6 +263,24 @@ func TestBuildArticleRegisters(t *testing.T) {
 	}
 	if string(withExpiry[8][2:4]) != "L3" {
 		t.Errorf("last register type = %q, want L3", string(withExpiry[8][2:4]))
+	}
+
+	// EAN alone (no ShelfLifeDays) also triggers L3 — it carries the barcode
+	// format slot needed to enable the fixed EAN.
+	withEAN, err := BuildArticleRegisters(Dibal500PLU{
+		Code:        "1",
+		Name:        "Produkt",
+		PriceGrosze: 100,
+		EAN:         "5901234123457",
+	})
+	if err != nil {
+		t.Fatalf("build error: %v", err)
+	}
+	if len(withEAN) != 9 {
+		t.Fatalf("got %d registers, want 9 (L2 + X4 + 5×L4 + AS + L3)", len(withEAN))
+	}
+	if string(withEAN[8][2:4]) != "L3" {
+		t.Errorf("last register type = %q, want L3", string(withEAN[8][2:4]))
 	}
 
 	// Delete operations don't touch X4, L4, AS or L3 (nothing to sync).

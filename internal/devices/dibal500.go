@@ -102,8 +102,10 @@ func BuildArticleRegisters(plu Dibal500PLU) ([][]byte, error) {
 		}
 		registers = append(registers, as)
 
-		if plu.ShelfLifeDays != nil {
-			l3, err := BuildL3Register(plu, *plu.ShelfLifeDays)
+		// L3 also carries the barcode-format slot needed for a fixed EAN
+		// (see BuildL3Register), so send it whenever either is set.
+		if plu.ShelfLifeDays != nil || strings.TrimSpace(plu.EAN) != "" {
+			l3, err := BuildL3Register(plu, plu.ShelfLifeDays)
 			if err != nil {
 				return nil, err
 			}
@@ -492,7 +494,7 @@ func BuildASRegister(logicalAddr, group, code, ean string) ([]byte, error) {
 // for real weighed products: confirm the printed price still multiplies by
 // weight (not a fixed unit price) after this register is sent. If wrong,
 // this needs a real mapping, not a wider default guess.
-func BuildL3Register(plu Dibal500PLU, shelfLifeDays int) ([]byte, error) {
+func BuildL3Register(plu Dibal500PLU, shelfLifeDays *int) ([]byte, error) {
 	buf := make([]byte, Dibal500RegisterLen)
 	fillZeros(buf)
 
@@ -509,7 +511,13 @@ func BuildL3Register(plu Dibal500PLU, shelfLifeDays int) ([]byte, error) {
 
 	buf[12] = '0' // sale mode: weight-based default — see doc comment above
 
-	expiry, err := intField(shelfLifeDays, 6)
+	// No shelf life set -> "000000", matching the original's own "not set"
+	// fallback (both the date and hours branches write all-zero when empty).
+	days := 0
+	if shelfLifeDays != nil {
+		days = *shelfLifeDays
+	}
+	expiry, err := intField(days, 6)
 	if err != nil {
 		return nil, fmt.Errorf("termin ważności: %w", err)
 	}
@@ -524,7 +532,17 @@ func BuildL3Register(plu Dibal500PLU, shelfLifeDays int) ([]byte, error) {
 	}
 	copy(buf[38:40], labelNum)
 
-	// [40:44] barcode format id + fixed literal: unused, left zero.
+	// Barcode format slot (1-10): "01" enables the article's fixed EAN (AS
+	// register) on formats bound to it; "00" leaves barcode printing on
+	// whatever the format/scale defaults to (typically an auto-computed
+	// weight/price code). Untested which of the 10 slots is "correct" beyond
+	// slot 1 — verify on hardware; the scale's own KONF. EANC01..EANC10 menu
+	// may need slot 1 configured for "fixed article EAN" mode too.
+	if strings.TrimSpace(plu.EAN) != "" {
+		copy(buf[40:42], []byte("01"))
+	}
+
+	// [42:44] fixed literal: unused, left zero.
 	copy(buf[44:48], []byte("0001")) // section: default 1
 	// [48:130] VAT slot, smiley, class, associated element, recipe, logo,
 	// reserved, price-override flag: all unused, left zero.
