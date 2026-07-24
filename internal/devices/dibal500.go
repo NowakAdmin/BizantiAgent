@@ -394,9 +394,9 @@ const (
 //
 //	[0:2]   DireccionLogica; [2:4] "L4"; [4:6] Grupo
 //	[6:12]  article code; [12] line-A marker ('0','2','4','6','8')
-//	[13:61] line-A text, 48 bytes, space-padded
+//	[13:61] line-A text, 48 bytes — see l4EncodeLine (2 bytes per character)
 //	[61:67] article code (repeated); [67] line-B marker ('1','3','5','7','9')
-//	[68:116] line-B text, 48 bytes, space-padded
+//	[68:116] line-B text, 48 bytes — see l4EncodeLine
 //	[116:130] zero-filled
 func BuildL4Registers(logicalAddr, group, code, text string) ([][]byte, error) {
 	codeBytes, err := numericField(code, 6)
@@ -430,16 +430,46 @@ func BuildL4Registers(logicalAddr, group, code, text string) ([][]byte, error) {
 
 		copy(buf[6:12], codeBytes)
 		buf[12] = byte('0' + 2*reg)
-		copy(buf[13:61], textField(lines[2*reg], l4LineWidth))
+		copy(buf[13:61], l4EncodeLine(lines[2*reg]))
 
 		copy(buf[61:67], codeBytes)
 		buf[67] = byte('0' + 2*reg + 1)
-		copy(buf[68:116], textField(lines[2*reg+1], l4LineWidth))
+		copy(buf[68:116], l4EncodeLine(lines[2*reg+1]))
 
 		registers = append(registers, buf)
 	}
 
 	return registers, nil
+}
+
+// l4EncodeLine renders one Article Text Line into its 48-byte wire slot.
+// Confirmed on hardware: the field expects 2 bytes per visible character —
+// a filler byte followed by the real character — not 1 byte per character
+// like every other text field (L2 name, X4, AS). This is presumably a
+// wide-char storage convention shared with the keypad's own character-by-
+// character line editor. It also explains the 48-byte slot holding only 24
+// visible characters, exactly matching the scale's documented per-line limit
+// (49-MH000PL04, PLU creation step 18: "10 lines of 24 characters").
+//
+// The filler byte's own value appears not to matter for display (space
+// works cleanly); using anything else (e.g. the NUL byte a real 2-byte
+// charset would use) is unverified and risks being read as a string
+// terminator somewhere in the pipeline, so space is deliberately kept.
+func l4EncodeLine(text string) []byte {
+	out := make([]byte, l4LineWidth)
+	fillSpaces(out)
+
+	encoded := cp1250Encode(text)
+	if len(encoded) > l4LineChars {
+		encoded = encoded[:l4LineChars]
+	}
+
+	for i, c := range encoded {
+		out[i*2] = ' '
+		out[i*2+1] = c
+	}
+
+	return out
 }
 
 // asEANWidth is the fixed EAN field width in the AS register.

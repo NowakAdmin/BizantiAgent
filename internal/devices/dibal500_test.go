@@ -349,6 +349,22 @@ func TestBuildASRegister(t *testing.T) {
 	}
 }
 
+// l4Interleaved builds the expected 48-byte wire encoding for a line: a
+// space filler before each character, space-padded to the full slot width —
+// mirrors l4EncodeLine so tests assert against the documented wire format,
+// not the implementation.
+func l4Interleaved(text string) []byte {
+	out := make([]byte, l4LineWidth)
+	for i := range out {
+		out[i] = ' '
+	}
+	for i, c := range []byte(text) {
+		out[i*2] = ' '
+		out[i*2+1] = c
+	}
+	return out
+}
+
 func TestBuildL4Registers(t *testing.T) {
 	// Short text: fills the first slot, everything else blank.
 	regs, err := BuildL4Registers("00", "00", "6", "Mleko, cukier")
@@ -361,12 +377,11 @@ func TestBuildL4Registers(t *testing.T) {
 	if got := string(regs[0][12]); got != "0" {
 		t.Errorf("register 0 line-A marker = %q, want \"0\"", got)
 	}
-	wantLine := "Mleko, cukier"
-	if got := string(regs[0][13 : 13+len(wantLine)]); got != wantLine {
-		t.Errorf("line 1 content = %q, want %q", got, wantLine)
-	}
-	if regs[0][13+len(wantLine)] != ' ' {
-		t.Errorf("line 1 not space-padded after text")
+	// Confirmed on hardware: 2 bytes per character (space filler + char),
+	// not 1 byte per character like every other text field.
+	wantLineA := l4Interleaved("Mleko, cukier")
+	if got := regs[0][13:61]; string(got) != string(wantLineA) {
+		t.Errorf("line 1 = % X, want % X", got, wantLineA)
 	}
 	if got := string(regs[0][67]); got != "1" {
 		t.Errorf("register 0 line-B marker = %q, want \"1\"", got)
@@ -395,20 +410,24 @@ func TestBuildL4Registers(t *testing.T) {
 		}
 	}
 
-	// Long text spanning multiple 24-char lines.
+	// Long text spanning multiple 24-char lines (2-byte encoding still caps
+	// each line at 24 visible characters, matching the scale's own limit).
 	long := strings.Repeat("A", 24) + strings.Repeat("B", 24) + "C"
 	multi, err := BuildL4Registers("00", "00", "7", long)
 	if err != nil {
 		t.Fatalf("build error: %v", err)
 	}
-	if got := string(multi[0][13:37]); got != strings.Repeat("A", 24) {
-		t.Errorf("line 1 = %q, want 24 A's", got)
+	wantLine1 := l4Interleaved(strings.Repeat("A", 24))
+	if got := multi[0][13:61]; string(got) != string(wantLine1) {
+		t.Errorf("line 1 = % X, want % X", got, wantLine1)
 	}
-	if got := string(multi[0][68:92]); got != strings.Repeat("B", 24) {
-		t.Errorf("line 2 = %q, want 24 B's", got)
+	wantLine2 := l4Interleaved(strings.Repeat("B", 24))
+	if got := multi[0][68:116]; string(got) != string(wantLine2) {
+		t.Errorf("line 2 = % X, want % X", got, wantLine2)
 	}
-	if multi[1][13] != 'C' {
-		t.Errorf("line 3 first byte = %c, want 'C'", multi[1][13])
+	// line 3 = "C": filler then 'C' at the start of register 1's slot A
+	if multi[1][13] != ' ' || multi[1][14] != 'C' {
+		t.Errorf("line 3 start = %c%c, want space+C", multi[1][13], multi[1][14])
 	}
 
 	// Text beyond 240 chars (10 lines x 24) is dropped, not an error.
