@@ -23,6 +23,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 	"unsafe"
 )
 
@@ -107,6 +108,14 @@ func main() {
 	allOK := true
 
 	for i, reg := range registers {
+		if i > 0 {
+			// ponytail: guards against a suspected scale-side receive-buffer
+			// overrun when many registers are sent back-to-back on one
+			// connection (diagnostic test showed byte corruption on
+			// multi-register text pushes). Raise this if corruption persists.
+			time.Sleep(100 * time.Millisecond)
+		}
+
 		// int SendRegisterWEx3(int handle, byte* buf, int len, char* log, int timer, BOOL transform, BOOL soloError)
 		r, _, _ := sendProc.Call(
 			uintptr(handle),
