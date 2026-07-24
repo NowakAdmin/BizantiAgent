@@ -209,9 +209,9 @@ func TestBuildArticleRegisters(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build error: %v", err)
 	}
-	// L2 + one X4 page + five L4 registers (10 text-line slots).
-	if len(regs) != 7 {
-		t.Fatalf("got %d registers, want 7 (L2 + X4 + 5×L4)", len(regs))
+	// L2 + one X4 page + five L4 registers + one AS register.
+	if len(regs) != 8 {
+		t.Fatalf("got %d registers, want 8 (L2 + X4 + 5×L4 + AS)", len(regs))
 	}
 	if string(regs[0][2:4]) != "L2" {
 		t.Errorf("register 0 type = %q, want L2", string(regs[0][2:4]))
@@ -224,8 +224,11 @@ func TestBuildArticleRegisters(t *testing.T) {
 			t.Errorf("register %d type = %q, want L4", i, string(regs[i][2:4]))
 		}
 	}
+	if string(regs[7][2:4]) != "AS" {
+		t.Errorf("register 7 type = %q, want AS", string(regs[7][2:4]))
+	}
 
-	// ShelfLifeDays set -> L3 is appended after L2+X4+5×L4.
+	// ShelfLifeDays set -> L3 is appended after L2+X4+5×L4+AS.
 	days := 7
 	withExpiry, err := BuildArticleRegisters(Dibal500PLU{
 		Code:          "1",
@@ -236,20 +239,76 @@ func TestBuildArticleRegisters(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build error: %v", err)
 	}
-	if len(withExpiry) != 8 {
-		t.Fatalf("got %d registers, want 8 (L2 + X4 + 5×L4 + L3)", len(withExpiry))
+	if len(withExpiry) != 9 {
+		t.Fatalf("got %d registers, want 9 (L2 + X4 + 5×L4 + AS + L3)", len(withExpiry))
 	}
-	if string(withExpiry[7][2:4]) != "L3" {
-		t.Errorf("last register type = %q, want L3", string(withExpiry[7][2:4]))
+	if string(withExpiry[8][2:4]) != "L3" {
+		t.Errorf("last register type = %q, want L3", string(withExpiry[8][2:4]))
 	}
 
-	// Delete operations don't touch X4, L4 or L3 (nothing to sync).
+	// Delete operations don't touch X4, L4, AS or L3 (nothing to sync).
 	del, err := BuildArticleRegisters(Dibal500PLU{Mode: "B", Code: "1", ShelfLifeDays: &days})
 	if err != nil {
 		t.Fatalf("build delete error: %v", err)
 	}
 	if len(del) != 1 {
 		t.Fatalf("delete: got %d registers, want 1 (L2 only)", len(del))
+	}
+}
+
+func TestBuildASRegister(t *testing.T) {
+	reg, err := BuildASRegister("00", "00", "6", "5901234123457")
+	if err != nil {
+		t.Fatalf("build error: %v", err)
+	}
+	if len(reg) != 130 {
+		t.Fatalf("length = %d, want 130", len(reg))
+	}
+
+	cases := []struct {
+		off  int
+		want string
+	}{
+		{0, "00"},             // logical address default
+		{2, "AS"},             // register type
+		{4, "00"},             // group default
+		{6, "000006"},         // code, 6 digits
+		{12, "5901234123457"}, // EAN, exactly 13 chars
+	}
+	for _, c := range cases {
+		got := string(reg[c.off : c.off+len(c.want)])
+		if got != c.want {
+			t.Errorf("offset %d = %q, want %q", c.off, got, c.want)
+		}
+	}
+
+	for i := 25; i < 130; i++ {
+		if reg[i] != '0' {
+			t.Fatalf("tail: byte %d = %d, want '0'", i, reg[i])
+		}
+	}
+
+	// Shorter EAN is space-padded to fill the 13-byte field.
+	short, err := BuildASRegister("00", "00", "1", "123")
+	if err != nil {
+		t.Fatalf("build error: %v", err)
+	}
+	if got := string(short[12:15]); got != "123" {
+		t.Errorf("short EAN content = %q, want 123", got)
+	}
+	if short[15] != ' ' {
+		t.Errorf("short EAN not space-padded")
+	}
+
+	// Empty EAN clears the field (all spaces) rather than erroring.
+	empty, err := BuildASRegister("00", "00", "1", "")
+	if err != nil {
+		t.Fatalf("build error: %v", err)
+	}
+	for i := 12; i < 25; i++ {
+		if empty[i] != ' ' {
+			t.Fatalf("empty EAN: byte %d = %d, want space", i, empty[i])
+		}
 	}
 }
 

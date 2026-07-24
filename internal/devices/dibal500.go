@@ -61,6 +61,7 @@ type Dibal500PLU struct {
 	LogicalAddr string `json:"logical_addr,omitempty"` // scale logical address (default "00")
 	Group       string `json:"group,omitempty"`        // group/department (default "00")
 	Composition string `json:"composition,omitempty"`  // ingredients/composition; sent as both L4 (Article Text Lines — confirmed on hardware to be what factory formats print) and X4 (G Text, in case a format uses that instead)
+	EAN         string `json:"ean,omitempty"`          // fixed EAN-13 to print (AS register); printing it may also require the label format's barcode field to be configured for "fixed EAN" rather than the scale's auto-computed weight/price barcode — a DLD/scale-side setting, not something this register alone controls
 	LabelNum    string `json:"label_num,omitempty"`    // on-scale label format number (L3 FormatoEtiquetaSerieL); default "01". Only takes effect once GLOBALNY FORMAT ETYKIETY (Global Label Format) is set to 0 on the scale (MENU > Printing Parameters) — otherwise the scale always prints its global format regardless of this field.
 
 	// ShelfLifeDays triggers the L3 register (shelf-life + other article
@@ -94,6 +95,12 @@ func BuildArticleRegisters(plu Dibal500PLU) ([][]byte, error) {
 			return nil, err
 		}
 		registers = append(registers, l4...)
+
+		as, err := BuildASRegister(plu.LogicalAddr, plu.Group, plu.Code, plu.EAN)
+		if err != nil {
+			return nil, err
+		}
+		registers = append(registers, as)
 
 		if plu.ShelfLifeDays != nil {
 			l3, err := BuildL3Register(plu, *plu.ShelfLifeDays)
@@ -429,6 +436,45 @@ func BuildL4Registers(logicalAddr, group, code, text string) ([][]byte, error) {
 	}
 
 	return registers, nil
+}
+
+// asEANWidth is the fixed EAN field width in the AS register.
+const asEANWidth = 13
+
+// BuildASRegister renders the "AS" register — a fixed EAN-13 assigned to an
+// article, reverse engineered from ComunicacionesBalPC.GenerarAS_EnBytes
+// (single-article path). Simple, self-contained layout:
+//
+//	[0:2]   DireccionLogica; [2:4] "AS"; [4:6] Grupo
+//	[6:12]  article code — zero-padded 6 digits
+//	[12:25] EAN value, 13 bytes, space-padded/truncated
+//	[25:130] zero-filled
+//
+// Always sent (even with an empty EAN) so removing a product's EAN clears
+// any stale value from a previous push — same reasoning as X4/L4.
+//
+// Printing the fixed EAN may also require the active label format's barcode
+// field to be configured for "article EAN" rather than the scale's built-in
+// auto-computed weight/price barcode (KONF. EANC01..EANC10 on the scale, or
+// the barcode element's binding in DLD) — this register alone provides the
+// value, it doesn't select which barcode mode a format uses.
+func BuildASRegister(logicalAddr, group, code, ean string) ([]byte, error) {
+	codeBytes, err := numericField(code, 6)
+	if err != nil {
+		return nil, fmt.Errorf("kod artykułu: %w", err)
+	}
+
+	buf := make([]byte, Dibal500RegisterLen)
+	fillZeros(buf)
+
+	copy(buf[0:2], pad2Digits(logicalAddr))
+	buf[2] = 'A'
+	buf[3] = 'S'
+	copy(buf[4:6], pad2Digits(group))
+	copy(buf[6:12], codeBytes)
+	copy(buf[12:12+asEANWidth], textField(ean, asEANWidth))
+
+	return buf, nil
 }
 
 // BuildL3Register renders the "extra attributes" L3 register — reverse
