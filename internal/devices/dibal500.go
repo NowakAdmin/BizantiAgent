@@ -387,8 +387,9 @@ const (
 // Always renders all 5 registers (10 slots, blank if unused) so a shorter
 // composition clears stale trailing lines left by a previous, longer one —
 // same reasoning as X4. Text is split into <=24-character lines (hard cut,
-// no word-wrap) into up to 10 slots; anything beyond 240 characters total is
-// dropped.
+// no word-wrap) starting at slot 1 (Tek2) — slot 0 (Tek1) sits directly
+// under the product name and is reserved, left blank here. That leaves 9
+// usable slots; anything beyond 216 characters (9×24) total is dropped.
 //
 // Register layout (2 lines per 130-byte register):
 //
@@ -407,9 +408,12 @@ func BuildL4Registers(logicalAddr, group, code, text string) ([][]byte, error) {
 	logicalBytes := pad2Digits(logicalAddr)
 	groupBytes := pad2Digits(group)
 
+	// Composition starts at Tek2 (slot 1), not Tek1 (slot 0) — slot 0 sits
+	// directly under the product name and is reserved, not part of the
+	// composition text.
 	runes := []rune(strings.TrimSpace(text))
 	lines := make([]string, l4MaxLines)
-	for i := 0; i < l4MaxLines && len(runes) > 0; i++ {
+	for i := 1; i < l4MaxLines && len(runes) > 0; i++ {
 		end := l4LineChars
 		if end > len(runes) {
 			end = len(runes)

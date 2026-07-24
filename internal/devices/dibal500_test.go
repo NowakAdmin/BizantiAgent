@@ -366,7 +366,8 @@ func l4Interleaved(text string) []byte {
 }
 
 func TestBuildL4Registers(t *testing.T) {
-	// Short text: fills the first slot, everything else blank.
+	// Short text: slot 0 (Tek1, under the product name) is reserved and
+	// always blank; composition starts at slot 1 (Tek2, register 0 slot B).
 	regs, err := BuildL4Registers("00", "00", "6", "Mleko, cukier")
 	if err != nil {
 		t.Fatalf("build error: %v", err)
@@ -377,20 +378,20 @@ func TestBuildL4Registers(t *testing.T) {
 	if got := string(regs[0][12]); got != "0" {
 		t.Errorf("register 0 line-A marker = %q, want \"0\"", got)
 	}
-	// Confirmed on hardware: 2 bytes per character (space filler + char),
-	// not 1 byte per character like every other text field.
-	wantLineA := l4Interleaved("Mleko, cukier")
-	if got := regs[0][13:61]; string(got) != string(wantLineA) {
-		t.Errorf("line 1 = % X, want % X", got, wantLineA)
+	// Tek1 (slot 0) stays blank.
+	for i := 13; i < 61; i++ {
+		if regs[0][i] != ' ' {
+			t.Fatalf("Tek1 (reserved): byte %d = %d, want space", i, regs[0][i])
+		}
 	}
 	if got := string(regs[0][67]); got != "1" {
 		t.Errorf("register 0 line-B marker = %q, want \"1\"", got)
 	}
-	// line 2 (slot B of register 0) is empty -> all spaces
-	for i := 68; i < 116; i++ {
-		if regs[0][i] != ' ' {
-			t.Fatalf("empty line-B: byte %d = %d, want space", i, regs[0][i])
-		}
+	// Confirmed on hardware: 2 bytes per character (space filler + char),
+	// not 1 byte per character like every other text field.
+	wantLineB := l4Interleaved("Mleko, cukier")
+	if got := regs[0][68:116]; string(got) != string(wantLineB) {
+		t.Errorf("Tek2 (composition line 1) = % X, want % X", got, wantLineB)
 	}
 	// tail always zero-filled
 	for i := 116; i < 130; i++ {
@@ -411,26 +412,29 @@ func TestBuildL4Registers(t *testing.T) {
 	}
 
 	// Long text spanning multiple 24-char lines (2-byte encoding still caps
-	// each line at 24 visible characters, matching the scale's own limit).
+	// each line at 24 visible characters), starting at Tek2.
 	long := strings.Repeat("A", 24) + strings.Repeat("B", 24) + "C"
 	multi, err := BuildL4Registers("00", "00", "7", long)
 	if err != nil {
 		t.Fatalf("build error: %v", err)
 	}
+	// Tek2 (register 0 slot B) = first 24 A's.
 	wantLine1 := l4Interleaved(strings.Repeat("A", 24))
-	if got := multi[0][13:61]; string(got) != string(wantLine1) {
-		t.Errorf("line 1 = % X, want % X", got, wantLine1)
+	if got := multi[0][68:116]; string(got) != string(wantLine1) {
+		t.Errorf("Tek2 = % X, want % X", got, wantLine1)
 	}
+	// Tek3 (register 1 slot A) = 24 B's.
 	wantLine2 := l4Interleaved(strings.Repeat("B", 24))
-	if got := multi[0][68:116]; string(got) != string(wantLine2) {
-		t.Errorf("line 2 = % X, want % X", got, wantLine2)
+	if got := multi[1][13:61]; string(got) != string(wantLine2) {
+		t.Errorf("Tek3 = % X, want % X", got, wantLine2)
 	}
-	// line 3 = "C": filler then 'C' at the start of register 1's slot A
-	if multi[1][13] != ' ' || multi[1][14] != 'C' {
-		t.Errorf("line 3 start = %c%c, want space+C", multi[1][13], multi[1][14])
+	// Tek4 (register 1 slot B) = "C": filler then 'C' at the start.
+	if multi[1][68] != ' ' || multi[1][69] != 'C' {
+		t.Errorf("Tek4 start = %c%c, want space+C", multi[1][68], multi[1][69])
 	}
 
-	// Text beyond 240 chars (10 lines x 24) is dropped, not an error.
+	// Text beyond 216 chars (9 usable lines x 24, since Tek1 is reserved) is
+	// dropped, not an error.
 	tooLong := strings.Repeat("Z", 300)
 	capped, err := BuildL4Registers("00", "00", "8", tooLong)
 	if err != nil {
@@ -438,5 +442,11 @@ func TestBuildL4Registers(t *testing.T) {
 	}
 	if len(capped) != 5 {
 		t.Fatalf("got %d registers, want 5 even when input exceeds capacity", len(capped))
+	}
+	// Tek1 (slot 0) stays blank even for very long input.
+	for i := 13; i < 61; i++ {
+		if capped[0][i] != ' ' {
+			t.Fatalf("Tek1 (reserved) with long input: byte %d = %d, want space", i, capped[0][i])
+		}
 	}
 }
