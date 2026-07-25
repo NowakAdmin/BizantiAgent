@@ -217,7 +217,7 @@ func TestBuildL3Register(t *testing.T) {
 		t.Errorf("barcode format slot = %q, want 01 when EAN is set", got)
 	}
 
-	// Frozen date present -> written as DDMMYY at [25:31]; absent -> zeros.
+	// Frozen date present -> written as DDMMYY at [25:31]; absent -> spaces.
 	withFrozen, err := BuildL3Register(Dibal500PLU{Code: "5", FrozenDate: "230724"}, nil)
 	if err != nil {
 		t.Fatalf("build error: %v", err)
@@ -229,8 +229,8 @@ func TestBuildL3Register(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build error: %v", err)
 	}
-	if got := string(noFrozen[25:31]); got != "000000" {
-		t.Errorf("no frozen date = %q, want 000000", got)
+	if got := string(noFrozen[25:31]); got != "      " {
+		t.Errorf("no frozen date = %q, want 6 spaces (zeros read as a valid date on hardware)", got)
 	}
 }
 

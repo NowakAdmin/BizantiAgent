@@ -564,12 +564,12 @@ func BuildL3Register(plu Dibal500PLU, shelfLifeDays *int) ([]byte, error) {
 
 	// [25:31] packaging/freezing date (FechaEnvasado in the original DFS
 	// schema — matches "data zamrożenia" on the scale). Written as DDMMYY
-	// (6 ASCII digits, no separators) when provided, "000000" otherwise.
-	// ponytail: there's no register bit that selects date-vs-days-count mode
-	// for this field (the original picks it from an external DB setting we
-	// don't control) — writing a literal date here is a best guess matching
-	// the field's name; verify on hardware that it renders as a date, not a
-	// day-count, and adjust if wrong.
+	// (6 ASCII digits, no separators) when provided. Left as spaces (not the
+	// register's usual zero-fill) when absent: hardware testing showed
+	// "000000" here still reads as a valid date to the scale, so it kept
+	// printing "przechowuj zamrożone" (store frozen) even with no date set —
+	// blank/spaces is what actually turns that message off.
+	fillSpaces(buf[25:31])
 	if fd := strings.TrimSpace(plu.FrozenDate); fd != "" {
 		frozen, err := numericField(fd, 6)
 		if err != nil {
