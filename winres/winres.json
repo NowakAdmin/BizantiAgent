@@ -11,7 +11,7 @@
       "0409": {
         "identity": {
           "name": "NowakAdministrators.BizantiAgent",
-          "version": "0.1.30.0"
+          "version": "0.1.31.0"
         },
         "description": "Bizanti Agent - menedzer urzadzen dla Bizanti ERP",
         "minimum-os": "win7",
@@ -35,20 +35,20 @@
     "#1": {
       "0000": {
         "fixed": {
-          "file_version": "0.1.30.0",
-          "product_version": "0.1.30.0"
+          "file_version": "0.1.31.0",
+          "product_version": "0.1.31.0"
         },
         "info": {
           "0415": {
             "CompanyName": "Nowak Administrators Sp. z o.o.",
             "FileDescription": "Bizanti Agent — menedżer urządzeń dla Bizanti ERP",
-            "FileVersion": "0.1.30.0",
+            "FileVersion": "0.1.31.0",
             "InternalName": "BizantiAgent",
             "LegalCopyright": "© 2025–2026 Nowak Administrators Sp. z o.o. Wszelkie prawa zastrzeżone.",
             "LegalTrademarks": "„BizantiAgent” i „Bizanti” są znakami towarowymi Nowak Administrators Sp. z o.o. Używanie nazwy bez pisemnej zgody zabronione.",
             "OriginalFilename": "BizantiAgent.exe",
             "ProductName": "Bizanti Agent",
-            "ProductVersion": "0.1.30.0"
+            "ProductVersion": "0.1.31.0"
           }
         }
       }
