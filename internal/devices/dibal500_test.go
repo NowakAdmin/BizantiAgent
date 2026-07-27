@@ -234,6 +234,154 @@ func TestBuildL3Register(t *testing.T) {
 	}
 }
 
+func TestBuildH3Register(t *testing.T) {
+	days := 5
+	reg, err := BuildH3Register(Dibal500PLU{
+		Code:       "6",
+		FrozenDate: "250726",
+		LabelNum:   "22",
+		EAN:        "0123456789123",
+	}, &days)
+	if err != nil {
+		t.Fatalf("build error: %v", err)
+	}
+	if len(reg) != 130 {
+		t.Fatalf("length = %d, want 130", len(reg))
+	}
+
+	// Values below are cross-checked byte-for-byte against a real "H3"
+	// record for this exact article (code 6, "szpinak") pulled from an LBS
+	// backup of the production scale, confirming these offsets are correct
+	// independent of the decompiled-source derivation.
+	cases := []struct {
+		off  int
+		want string
+	}{
+		{0, "00"},             // logical address default
+		{2, "H3"},             // register type
+		{4, "00"},             // group default
+		{6, "000006"},         // code, 6 digits
+		{14, "000005"},        // Caducidad (shelf-life), matches real backup
+		{26, "250726"},        // FechaEnvasado, matches real backup
+		{39, "22"},            // label format, matches real backup
+		{41, "01"},            // barcode slot auto-enabled by EAN
+		{45, "0001"},          // section default
+		{64, "0123456789123"}, // EAN scanner code
+	}
+	for _, c := range cases {
+		got := string(reg[c.off : c.off+len(c.want)])
+		if got != c.want {
+			t.Errorf("offset %d = %q, want %q", c.off, got, c.want)
+		}
+	}
+
+	// FechaCongelacion — the field under test — defaults to spaces (unset),
+	// same "blank means blank" convention as FechaEnvasado.
+	if got := string(reg[98:104]); got != "      " {
+		t.Errorf("congelacion default = %q, want 6 spaces", got)
+	}
+
+	withCongelacion, err := BuildH3Register(Dibal500PLU{Code: "6", CongelacionDate: "250726"}, nil)
+	if err != nil {
+		t.Fatalf("build error: %v", err)
+	}
+	if got := string(withCongelacion[98:104]); got != "250726" {
+		t.Errorf("congelacion = %q, want 250726", got)
+	}
+}
+
+func TestBuildFormatRegisters(t *testing.T) {
+	// Field values below are taken directly from a real format export
+	// ("28.dld", read off the production scale) to cross-check the offsets
+	// independent of the LN.dll-derived layout: product name (campo 12),
+	// then the "store frozen" / "keep cold" static texts (campo 80/82).
+	fields := []Dibal500FormatField{
+		{FieldID: 12, X: 0, Y: 10, Rotation: 0, Font: 60, Extra: 0},
+		{FieldID: 80, X: 169, Y: 196, Rotation: 0, Font: 80, Extra: 0},
+		{FieldID: 82, X: 169, Y: 216, Rotation: 0, Font: 80, Extra: 0},
+	}
+	regs, err := BuildFormatRegisters("00", "00", "40", 432, 480, fields)
+	if err != nil {
+		t.Fatalf("build error: %v", err)
+	}
+	if len(regs) != 2 {
+		t.Fatalf("got %d registers, want 2 (4R header + 1 H6 line)", len(regs))
+	}
+	for _, r := range regs {
+		if len(r) != 130 {
+			t.Fatalf("register length = %d, want 130", len(r))
+		}
+	}
+
+	header := regs[0]
+	if got := string(header[2:4]); got != "4R" {
+		t.Errorf("header type = %q, want 4R", got)
+	}
+	if got := string(header[7:9]); got != "40" {
+		t.Errorf("format number = %q, want 40", got)
+	}
+	if got := string(header[9:11]); got != "03" {
+		t.Errorf("field count = %q, want 03", got)
+	}
+	if got := string(header[41:45]); got != "0432" {
+		t.Errorf("width = %q, want 0432", got)
+	}
+	if got := string(header[45:49]); got != "0480" {
+		t.Errorf("height = %q, want 0480", got)
+	}
+
+	h6 := regs[1]
+	if got := string(h6[2:4]); got != "H6" {
+		t.Errorf("H6 type = %q, want H6", got)
+	}
+	if got := string(h6[7:9]); got != "40" {
+		t.Errorf("H6 format number = %q, want 40", got)
+	}
+	// Field 0 (product name), base offset 9.
+	if got := string(h6[9:12]); got != "012" {
+		t.Errorf("field0 TIPO = %q, want 012", got)
+	}
+	if got := string(h6[15:19]); got != "0010" {
+		t.Errorf("field0 Y = %q, want 0010", got)
+	}
+	// Field 1 ("store frozen" text), base offset 26.
+	if got := string(h6[26:29]); got != "080" {
+		t.Errorf("field1 TIPO = %q, want 080", got)
+	}
+	if got := string(h6[29:32]); got != "169" {
+		t.Errorf("field1 X = %q, want 169", got)
+	}
+	if got := string(h6[32:36]); got != "0196" {
+		t.Errorf("field1 Y = %q, want 0196", got)
+	}
+	// Field 2 ("keep cold" text), base offset 43.
+	if got := string(h6[43:46]); got != "082" {
+		t.Errorf("field2 TIPO = %q, want 082", got)
+	}
+
+	// 9 fields must wrap into 2 H6 lines (7 + 2), matching LN.dll's 7-per-line packing.
+	many := make([]Dibal500FormatField, 9)
+	for i := range many {
+		many[i] = Dibal500FormatField{FieldID: i + 1, X: i, Y: i}
+	}
+	regsMany, err := BuildFormatRegisters("00", "00", "41", 432, 480, many)
+	if err != nil {
+		t.Fatalf("build error: %v", err)
+	}
+	if len(regsMany) != 3 {
+		t.Fatalf("got %d registers, want 3 (4R header + 2 H6 lines)", len(regsMany))
+	}
+	if got := string(regsMany[0][9:11]); got != "09" {
+		t.Errorf("field count = %q, want 09", got)
+	}
+	if got := string(regsMany[1][9:12]); got != "001" {
+		t.Errorf("first line field0 TIPO = %q, want 001", got)
+	}
+	if got := string(regsMany[2][9:12]); got != "008" {
+		t.Errorf("second line field0 TIPO = %q, want 008 (9th field wraps to line 2)", got)
+	}
+}
+
 func TestBuildArticleRegisters(t *testing.T) {
 	regs, err := BuildArticleRegisters(Dibal500PLU{
 		Code:        "1",

@@ -3,6 +3,7 @@
 package agent
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -42,6 +43,90 @@ func (a *Agent) executeDebugCommand(command string, rawPayload json.RawMessage) 
 			return nil, true, err
 		}
 		return map[string]any{"registers": res.Registers}, true, nil
+
+	case "dibal500_send_h3":
+		// Builds and sends a single H3 register via devices.BuildH3Register —
+		// exploratory tool to test whether FechaCongelacion (H3) is what
+		// actually drives the scale's "przechowuj zamrożone" message, since
+		// the normal push path only ever sends L2/L3/L4/X4/AS. See the
+		// BuildH3Register doc comment for the full byte-layout rationale.
+		var payload struct {
+			ScaleIP       string              `json:"scale_ip"`
+			ScalePort     int                 `json:"scale_port,omitempty"`
+			PCIP          string              `json:"pc_ip,omitempty"`
+			TimeoutMs     int                 `json:"timeout_ms,omitempty"`
+			Transform     bool                `json:"transform,omitempty"`
+			ShelfLifeDays *int                `json:"shelf_life_days,omitempty"`
+			PLU           devices.Dibal500PLU `json:"plu"`
+		}
+		if err := json.Unmarshal(rawPayload, &payload); err != nil {
+			return nil, true, err
+		}
+		if strings.TrimSpace(payload.PLU.Code) == "" {
+			return nil, true, fmt.Errorf("dibal500_send_h3: brak 'plu.code'")
+		}
+
+		reg, err := devices.BuildH3Register(payload.PLU, payload.ShelfLifeDays)
+		if err != nil {
+			return nil, true, err
+		}
+
+		res, err := a.runDibal500Bridge(payload.ScaleIP, payload.ScalePort, payload.PCIP, payload.TimeoutMs, payload.Transform, false, []string{hex.EncodeToString(reg)})
+		if err != nil {
+			return nil, true, err
+		}
+		return map[string]any{"registers": res.Registers, "sent_hex": hex.EncodeToString(reg)}, true, nil
+
+	case "dibal500_send_format":
+		// Builds and sends a full Dibal 500 label FORMAT (the physical
+		// layout — "4R" header + "H6" field-placement registers) via
+		// devices.BuildFormatRegisters, bypassing DLD entirely. Exploratory:
+		// test on an unused format slot (e.g. 40-45) and confirm on the
+		// scale/via DFS-RGI-LBS readback before touching a live format.
+		var payload struct {
+			ScaleIP     string                        `json:"scale_ip"`
+			ScalePort   int                           `json:"scale_port,omitempty"`
+			PCIP        string                        `json:"pc_ip,omitempty"`
+			TimeoutMs   int                           `json:"timeout_ms,omitempty"`
+			Transform   bool                          `json:"transform,omitempty"`
+			LogicalAddr string                        `json:"logical_addr,omitempty"`
+			Group       string                        `json:"group,omitempty"`
+			FormatNum   string                        `json:"format_num"`
+			Width       int                           `json:"width"`
+			Height      int                           `json:"height"`
+			Fields      []devices.Dibal500FormatField `json:"fields"`
+		}
+		if err := json.Unmarshal(rawPayload, &payload); err != nil {
+			return nil, true, err
+		}
+		if strings.TrimSpace(payload.FormatNum) == "" {
+			return nil, true, fmt.Errorf("dibal500_send_format: brak 'format_num'")
+		}
+
+		logicalAddr := payload.LogicalAddr
+		if strings.TrimSpace(logicalAddr) == "" {
+			logicalAddr = "00"
+		}
+		group := payload.Group
+		if strings.TrimSpace(group) == "" {
+			group = "00"
+		}
+
+		regs, err := devices.BuildFormatRegisters(logicalAddr, group, payload.FormatNum, payload.Width, payload.Height, payload.Fields)
+		if err != nil {
+			return nil, true, err
+		}
+
+		hexRegs := make([]string, len(regs))
+		for i, r := range regs {
+			hexRegs[i] = hex.EncodeToString(r)
+		}
+
+		res, err := a.runDibal500Bridge(payload.ScaleIP, payload.ScalePort, payload.PCIP, payload.TimeoutMs, payload.Transform, false, hexRegs)
+		if err != nil {
+			return nil, true, err
+		}
+		return map[string]any{"registers": res.Registers, "sent_hex": hexRegs}, true, nil
 
 	case "tcp_capture":
 		var payload struct {

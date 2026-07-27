@@ -71,6 +71,19 @@ type Dibal500PLU struct {
 	// BuildL3Register for why L3 carries real risk beyond shelf-life.
 	ShelfLifeDays *int   `json:"shelf_life_days,omitempty"`
 	FrozenDate    string `json:"frozen_date,omitempty"` // DDMMYY (6 digits); also triggers L3 when set
+
+	// CongelacionDate (DDMMYY): H3 register's FechaCongelacion field —
+	// distinct from FrozenDate, which is L3's FechaEnvasado ("packaging").
+	// Exploratory field, not yet wired into BuildArticleRegisters: a real
+	// backup export from the production scale showed FechaCongelacion sits
+	// untouched (all zeros) on an article whose FechaEnvasado (FrozenDate)
+	// we do set — "Congelación" literally means "freezing" in Spanish, so
+	// this is the prime suspect for what actually drives the scale's
+	// "przechowuj zamrożone" (store frozen) printed message. Use
+	// BuildH3Register directly (e.g. via the debugtools dibal500_send_h3
+	// command) to test this on hardware before wiring it into the normal
+	// push path.
+	CongelacionDate string `json:"congelacion_date,omitempty"`
 }
 
 // BuildArticleRegisters renders every register needed to fully program an
@@ -609,4 +622,277 @@ func BuildL3Register(plu Dibal500PLU, shelfLifeDays *int) ([]byte, error) {
 	// reserved, price-override flag: all unused, left zero.
 
 	return buf, nil
+}
+
+// BuildH3Register renders the 130-byte H3 register — the 500-series'
+// extended article record. Exploratory/testing only, not yet wired into
+// BuildArticleRegisters: a real backup export from the production scale
+// (LBS "Articles Only" backup) confirmed H3 shares the same underlying
+// article data as L2/L3 (its Caducidad and FechaEnvasado bytes matched
+// exactly what BuildL3Register had already sent for that article), but adds
+// a field L3 doesn't have: FechaCongelacion ("freezing date" — distinct
+// from FechaEnvasado, "packaging date", which is what plu.FrozenDate/L3
+// already sets). FechaCongelacion sat untouched (all zeros) on that real
+// article despite its FrozenDate being set, making it the prime suspect for
+// what actually drives the scale's "przechowuj zamrożone" (store frozen)
+// printed message — use this via the debugtools dibal500_send_h3 command to
+// test the hypothesis on hardware before wiring it into the normal push
+// path.
+//
+// Byte layout (0-indexed), reverse-engineered from
+// ComunicacionesBalPC.GenerarH3_EnBytes — fields shared with L3 mirror its
+// values so sending this doesn't clobber already-correct article data:
+//
+//	[0:2]     logical address, default "00"
+//	[2:4]     register type "H3"
+//	[4:6]     group, default "00"
+//	[6:12]    article code — zero-padded 6 digits
+//	[12]      sale mode / article-type byte — mirrors L3[12]
+//	[13]      literal '0'
+//	[14:20]   Caducidad (shelf-life/expiry) — mirrors L3[13:19]
+//	[20:26]   extra date — unused, left zero (mirrors L3[19:25])
+//	[26:32]   FechaEnvasado (packaging) — mirrors L3[25:31]; spaces when unset
+//	[32:39]   fixed + percentage tare — unused, left zero
+//	[39:41]   FormatoEtiquetaSerieL (label format) — mirrors L3[38:40]
+//	[41:43]   barcode format slot — mirrors L3[40:42]
+//	[43:45]   fixed literal — left zero
+//	[45:49]   section — "0001" default, mirrors L3[44:48]
+//	[49:64]   VAT slot, logo id, class id, associated element, smiley code —
+//	          unused, left zero
+//	[64:77]   EAN scanner code, 13 chars — space-padded, or the fixed EAN when set
+//	[77:98]   logo color, associated element, temp-offer id, piece weight —
+//	          unused, left zero
+//	[98:104]  FechaCongelacion (freezing date) — the field under test;
+//	          spaces when unset, DDMMYY when provided
+//	[104:130] alternate label format, color, stock warning, ad image,
+//	          reserved — unused, left zero
+func BuildH3Register(plu Dibal500PLU, shelfLifeDays *int) ([]byte, error) {
+	buf := make([]byte, Dibal500RegisterLen)
+	fillZeros(buf)
+
+	copy(buf[0:2], pad2Digits(plu.LogicalAddr))
+	buf[2] = 'H'
+	buf[3] = '3'
+	copy(buf[4:6], pad2Digits(plu.Group))
+
+	code, err := numericField(plu.Code, 6)
+	if err != nil {
+		return nil, fmt.Errorf("kod artykułu: %w", err)
+	}
+	copy(buf[6:12], code)
+
+	buf[12] = '0' // sale mode: weight-based default, mirrors L3
+	buf[13] = '0' // literal padding byte
+
+	days := 0
+	if shelfLifeDays != nil {
+		days = *shelfLifeDays
+	}
+	expiry, err := intField(days, 6)
+	if err != nil {
+		return nil, fmt.Errorf("termin ważności: %w", err)
+	}
+	copy(buf[14:20], expiry)
+
+	// [20:26] extra date: unused, left zero.
+
+	fillSpaces(buf[26:32])
+	if fd := strings.TrimSpace(plu.FrozenDate); fd != "" {
+		envasado, err := numericField(fd, 6)
+		if err != nil {
+			return nil, fmt.Errorf("data pakowania: %w", err)
+		}
+		copy(buf[26:32], envasado)
+	}
+
+	// [32:39] fixed + percentage tare: unused, left zero.
+
+	labelNum, err := numericField(plu.LabelNum, 2)
+	if err != nil {
+		return nil, fmt.Errorf("numer formatu etykiety: %w", err)
+	}
+	copy(buf[39:41], labelNum)
+
+	if slot := strings.TrimSpace(plu.BarcodeSlot); slot != "" {
+		slotBytes, err := numericField(slot, 2)
+		if err != nil {
+			return nil, fmt.Errorf("slot kodu kreskowego: %w", err)
+		}
+		copy(buf[41:43], slotBytes)
+	} else if strings.TrimSpace(plu.EAN) != "" {
+		copy(buf[41:43], []byte("01"))
+	}
+
+	// [43:45] fixed literal: unused, left zero.
+	copy(buf[45:49], []byte("0001")) // section: default 1
+	// [49:64] VAT slot, logo id, class id, associated element, smiley code:
+	// all unused, left zero.
+
+	fillSpaces(buf[64:77])
+	if ean := strings.TrimSpace(plu.EAN); ean != "" {
+		copy(buf[64:77], textField(ean, 13))
+	}
+
+	// [77:98] logo color, associated element, temp-offer id, piece weight:
+	// all unused, left zero.
+
+	// [98:104] FechaCongelacion — the field under test. Spaces when unset,
+	// matching the lesson learned from L3's FechaEnvasado (all-zeros reads
+	// as a valid date 00/00/00 to the scale, not as "not set").
+	fillSpaces(buf[98:104])
+	if fd := strings.TrimSpace(plu.CongelacionDate); fd != "" {
+		congelacion, err := numericField(fd, 6)
+		if err != nil {
+			return nil, fmt.Errorf("data zamrożenia (Congelación): %w", err)
+		}
+		copy(buf[98:104], congelacion)
+	}
+
+	// [104:130] alternate label format, color, stock warning, ad image,
+	// reserved: all unused, left zero.
+
+	return buf, nil
+}
+
+// Dibal500FormatField describes one placed field ("H6" register entry) on a
+// Dibal 500-series label FORMAT — the physical layout uploaded to the scale
+// (what Dibal's own DLD tool designs), as opposed to article DATA
+// (L2/L3/L4/X4/AS, built by the functions above). Reverse-engineered from
+// LN.dll (Serie500.EscribirTxCampos) and cross-checked against real .dld
+// format exports read off the scale.
+type Dibal500FormatField struct {
+	FieldID  int // TIPO: campo_id from the sys_campos_etiqueta catalog (12=product name, 6=price, 124=free text, ...)
+	X        int
+	Y        int
+	Rotation int
+	Font     int // magnification + fontFamilyId*20 (LN.dll formula); raw numeric code for now, no font-name table yet
+	Extra    int // "ANCHO" slot: width for variable-size fields, header/question index for a few special field types — 0 for simple fields
+}
+
+// dibal500FormatFieldsPerLine is how many 17-byte field entries fit after the
+// 9-byte H6 header within one 130-byte register: (130-9)/17 = 7, with 2
+// bytes to spare — matches LN.dll's own LIBRES(128,2).
+const dibal500FormatFieldsPerLine = 7
+
+// BuildFormatRegisters renders the "4R" header register plus as many "H6"
+// field-placement registers as needed for a Dibal 500 label format. Byte
+// layout (0-indexed), reverse-engineered from LN.dll's Serie500 class:
+//
+//	4R header (once):
+//	 [0:2]    logical address, default "00"
+//	 [2:4]    register type "4R"
+//	 [4:6]    group, default "00"
+//	 [6]      operation, 'A' (add/replace)
+//	 [7:9]    format number
+//	 [9:11]   field count (APARTADOS), 2 digits
+//	 [11:41]  unused, spaces
+//	 [41:45]  width, 4 digits
+//	 [45:49]  height, 4 digits
+//	 [49:130] unused, spaces
+//
+//	H6 field lines (as many as needed — up to 7 field entries per line):
+//	 [0:2] logical address, [2:4] "H6", [4:6] group, [6] 'A', [7:9] format number
+//	 then per field entry (17 bytes each, base = 9 + 17*i):
+//	  [+0:+3]   TIPO (campo_id)
+//	  [+3:+6]   X
+//	  [+6:+10]  Y
+//	  [+10:+11] rotation
+//	  [+11:+14] font
+//	  [+14:+17] extra ("ANCHO")
+//	 remaining bytes on the last line: spaces
+func BuildFormatRegisters(logicalAddr, group, formatNum string, width, height int, fields []Dibal500FormatField) ([][]byte, error) {
+	formatBytes, err := numericField(formatNum, 2)
+	if err != nil {
+		return nil, fmt.Errorf("numer formatu: %w", err)
+	}
+
+	header := make([]byte, Dibal500RegisterLen)
+	fillSpaces(header)
+	copy(header[0:2], pad2Digits(logicalAddr))
+	header[2] = '4'
+	header[3] = 'R'
+	copy(header[4:6], pad2Digits(group))
+	header[6] = 'A'
+	copy(header[7:9], formatBytes)
+
+	count, err := intField(len(fields), 2)
+	if err != nil {
+		return nil, fmt.Errorf("liczba pól: %w", err)
+	}
+	copy(header[9:11], count)
+
+	widthBytes, err := intField(width, 4)
+	if err != nil {
+		return nil, fmt.Errorf("szerokość: %w", err)
+	}
+	copy(header[41:45], widthBytes)
+
+	heightBytes, err := intField(height, 4)
+	if err != nil {
+		return nil, fmt.Errorf("wysokość: %w", err)
+	}
+	copy(header[45:49], heightBytes)
+
+	registers := [][]byte{header}
+
+	for i := 0; i < len(fields); i += dibal500FormatFieldsPerLine {
+		end := i + dibal500FormatFieldsPerLine
+		if end > len(fields) {
+			end = len(fields)
+		}
+		chunk := fields[i:end]
+
+		line := make([]byte, Dibal500RegisterLen)
+		fillSpaces(line)
+		copy(line[0:2], pad2Digits(logicalAddr))
+		line[2] = 'H'
+		line[3] = '6'
+		copy(line[4:6], pad2Digits(group))
+		line[6] = 'A'
+		copy(line[7:9], formatBytes)
+
+		for j, field := range chunk {
+			base := 9 + j*17
+
+			tipo, err := intField(field.FieldID, 3)
+			if err != nil {
+				return nil, fmt.Errorf("pole (TIPO %d): %w", field.FieldID, err)
+			}
+			copy(line[base:base+3], tipo)
+
+			x, err := intField(field.X, 3)
+			if err != nil {
+				return nil, fmt.Errorf("pole %d, X: %w", field.FieldID, err)
+			}
+			copy(line[base+3:base+6], x)
+
+			y, err := intField(field.Y, 4)
+			if err != nil {
+				return nil, fmt.Errorf("pole %d, Y: %w", field.FieldID, err)
+			}
+			copy(line[base+6:base+10], y)
+
+			rot, err := intField(field.Rotation, 1)
+			if err != nil {
+				return nil, fmt.Errorf("pole %d, rotacja: %w", field.FieldID, err)
+			}
+			copy(line[base+10:base+11], rot)
+
+			font, err := intField(field.Font, 3)
+			if err != nil {
+				return nil, fmt.Errorf("pole %d, font: %w", field.FieldID, err)
+			}
+			copy(line[base+11:base+14], font)
+
+			extra, err := intField(field.Extra, 3)
+			if err != nil {
+				return nil, fmt.Errorf("pole %d, extra: %w", field.FieldID, err)
+			}
+			copy(line[base+14:base+17], extra)
+		}
+
+		registers = append(registers, line)
+	}
+
+	return registers, nil
 }
