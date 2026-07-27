@@ -47,6 +47,23 @@ type Dibal500ProgramPayload struct {
 	PLU       Dibal500PLU `json:"plu"`
 }
 
+// Dibal500FormatProgramPayload is the payload for the "program_dibal_format"
+// command — programs a label FORMAT (physical layout), as opposed to
+// program_dibal_plu_500 which programs article DATA.
+type Dibal500FormatProgramPayload struct {
+	ScaleIP     string                `json:"scale_ip"`
+	ScalePort   int                   `json:"scale_port,omitempty"`
+	PCIP        string                `json:"pc_ip,omitempty"`
+	TimeoutMs   int                   `json:"timeout_ms,omitempty"`
+	Transform   bool                  `json:"transform,omitempty"`
+	LogicalAddr string                `json:"logical_addr,omitempty"`
+	Group       string                `json:"group,omitempty"`
+	FormatNum   string                `json:"format_num"`
+	Width       int                   `json:"width"`
+	Height      int                   `json:"height"`
+	Fields      []Dibal500FormatField `json:"fields"`
+}
+
 // Dibal500PLU holds the fields needed to build an L2 article register.
 type Dibal500PLU struct {
 	Mode        string `json:"mode,omitempty"`         // A / B / M (default M)

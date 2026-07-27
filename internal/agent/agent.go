@@ -894,6 +894,18 @@ func (a *Agent) executeCommand(command string, rawPayload json.RawMessage) (map[
 
 		return a.programDibal500(payload)
 
+	case "program_dibal_format":
+		// Dibal 500-series label FORMAT (the physical layout — "4R"/"H6"
+		// registers, reverse-engineered from Dibal's own DLD tool): programs
+		// where each field prints, replacing DLD for this step. See
+		// devices.BuildFormatRegisters for the byte-layout rationale.
+		var payload devices.Dibal500FormatProgramPayload
+		if err := json.Unmarshal(rawPayload, &payload); err != nil {
+			return nil, err
+		}
+
+		return a.programDibal500Format(payload)
+
 	case "ping_device":
 		var payload devices.PingDevicePayload
 		if err := json.Unmarshal(rawPayload, &payload); err != nil {
@@ -1085,6 +1097,43 @@ func (a *Agent) programDibal500(payload devices.Dibal500ProgramPayload) (map[str
 	}
 
 	return result, nil
+}
+
+// programDibal500Format builds and sends a Dibal 500-series label FORMAT
+// (physical layout, "4R"+"H6" registers) — see devices.BuildFormatRegisters.
+func (a *Agent) programDibal500Format(payload devices.Dibal500FormatProgramPayload) (map[string]any, error) {
+	logicalAddr := strings.TrimSpace(payload.LogicalAddr)
+	if logicalAddr == "" {
+		logicalAddr = "00"
+	}
+	group := strings.TrimSpace(payload.Group)
+	if group == "" {
+		group = "00"
+	}
+
+	registers, err := devices.BuildFormatRegisters(logicalAddr, group, payload.FormatNum, payload.Width, payload.Height, payload.Fields)
+	if err != nil {
+		return nil, fmt.Errorf("budowa rejestrów formatu: %w", err)
+	}
+
+	hexRegs := make([]string, len(registers))
+	for i, reg := range registers {
+		hexRegs[i] = hex.EncodeToString(reg)
+	}
+
+	a.logger.Printf("program_dibal_format: format %s (%d pól, %d rejestrów) -> waga %s:%d", payload.FormatNum, len(payload.Fields), len(registers), payload.ScaleIP, payload.ScalePort)
+
+	if _, err := a.runDibal500Bridge(payload.ScaleIP, payload.ScalePort, payload.PCIP, payload.TimeoutMs, payload.Transform, false, hexRegs); err != nil {
+		return nil, fmt.Errorf("nie zaprogramowano formatu: %w", err)
+	}
+
+	a.logger.Printf("program_dibal_format: format %s zaprogramowany pomyślnie (%d rejestrów)", payload.FormatNum, len(registers))
+
+	return map[string]any{
+		"format_num": payload.FormatNum,
+		"fields":     len(payload.Fields),
+		"registers":  len(registers),
+	}, nil
 }
 
 // dibalBridgePath returns the path to dibalcom-bridge.exe, expected next to the agent.
