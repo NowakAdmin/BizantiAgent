@@ -357,7 +357,7 @@ func StartSelfUpdate(newBinaryPath string) error {
 	scriptPath := tmpScript.Name()
 	_ = tmpScript.Close()
 
-	script := buildWindowsUpdateScript(targetPath, stagedBinaryPath, newBinaryPath, updateLogPath)
+	script := buildWindowsUpdateScript(targetPath, stagedBinaryPath, newBinaryPath, updateLogPath, os.Getpid())
 	if err := os.WriteFile(scriptPath, []byte(script), 0o700); err != nil {
 		return err
 	}
@@ -418,7 +418,7 @@ func copyFile(sourcePath string, destinationPath string) error {
 	return nil
 }
 
-func buildWindowsUpdateScript(targetPath string, stagedBinaryPath string, downloadedBinaryPath string, updateLogPath string) string {
+func buildWindowsUpdateScript(targetPath string, stagedBinaryPath string, downloadedBinaryPath string, updateLogPath string, callerPid int) string {
 	targetPath = escapePowerShellSingleQuoted(targetPath)
 	stagedBinaryPath = escapePowerShellSingleQuoted(stagedBinaryPath)
 	downloadedBinaryPath = escapePowerShellSingleQuoted(downloadedBinaryPath)
@@ -429,6 +429,7 @@ $target = '%s'
 $staged = '%s'
 $downloaded = '%s'
 $logPath = '%s'
+$callerPid = %d
 $scriptPath = $MyInvocation.MyCommand.Path
 $backup = Join-Path (Split-Path -Parent $target) 'BizantiAgent.previous.exe'
 
@@ -440,18 +441,21 @@ function Write-UpdateLog {
 
 try {
     New-Item -ItemType Directory -Path (Split-Path -Parent $logPath) -Force | Out-Null
-    Write-UpdateLog "=== Start self-update. target=$target staged=$staged ==="
+    Write-UpdateLog "=== Start self-update. target=$target staged=$staged callerPid=$callerPid ==="
 
-    # --- Kill running instances ---
-    Stop-Process -Name 'BizantiAgent'   -Force -ErrorAction SilentlyContinue
-    Stop-Process -Name 'bizanti-agent'  -Force -ErrorAction SilentlyContinue
-    Start-Sleep -Milliseconds 300
-    & taskkill /F /IM 'BizantiAgent.exe' /T 2>&1 | Out-Null
+    # --- Kill running instance ---
+    # Killed by exact PID (the process that spawned this script) rather than by
+    # a hardcoded image name — a debug build or any renamed copy of the exe
+    # would silently survive a name-based kill, keep the file locked, and make
+    # every replace attempt below fail without any visible error.
+    $exeBaseName = [System.IO.Path]::GetFileNameWithoutExtension($target)
+    Stop-Process -Id $callerPid -Force -ErrorAction SilentlyContinue
+    Stop-Process -Name $exeBaseName -Force -ErrorAction SilentlyContinue
 
     # --- Wait until process is fully gone (max 10 s) ---
     $deadline = (Get-Date).AddSeconds(10)
     while ((Get-Date) -lt $deadline) {
-        if (-not (Get-Process -Name 'BizantiAgent' -ErrorAction SilentlyContinue)) { break }
+        if (-not (Get-Process -Id $callerPid -ErrorAction SilentlyContinue)) { break }
         Start-Sleep -Milliseconds 300
     }
     Write-UpdateLog "Procesy zakończone. Rozpoczynam podmianę pliku."
@@ -518,7 +522,7 @@ try {
     Start-Sleep -Milliseconds 500
     Remove-Item $scriptPath -Force -ErrorAction SilentlyContinue
 }
-`, targetPath, stagedBinaryPath, downloadedBinaryPath, updateLogPath)
+`, targetPath, stagedBinaryPath, downloadedBinaryPath, updateLogPath, callerPid)
 }
 
 func escapePowerShellSingleQuoted(value string) string {

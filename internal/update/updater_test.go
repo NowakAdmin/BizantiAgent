@@ -42,6 +42,7 @@ func TestBuildWindowsUpdateScriptEscapesPathsAndLogsFailures(t *testing.T) {
 		`C:\Temp\O'Hara\BizantiAgent.update.exe`,
 		`C:\Users\adam\AppData\Local\Temp\new'binary.exe`,
 		`C:\ProgramData\BizantiAgent\logs\update.log`,
+		4242,
 	)
 
 	assertContains := func(fragment string) {
@@ -56,6 +57,8 @@ func TestBuildWindowsUpdateScriptEscapesPathsAndLogsFailures(t *testing.T) {
 	assertContains(`$downloaded = 'C:\Users\adam\AppData\Local\Temp\new''binary.exe'`)
 	assertContains(`$logPath = 'C:\ProgramData\BizantiAgent\logs\update.log'`)
 	assertContains(`BizantiAgent.previous.exe`)
+	assertContains(`$callerPid = 4242`)
+	assertContains(`Stop-Process -Id $callerPid -Force -ErrorAction SilentlyContinue`)
 	assertContains(`Write-UpdateLog "Próba #$attempt nieudana: $($_.Exception.Message)"`)
 	assertContains(`Start-Process -FilePath $target | Out-Null`)
 }
