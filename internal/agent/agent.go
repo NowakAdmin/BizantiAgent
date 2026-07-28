@@ -906,6 +906,17 @@ func (a *Agent) executeCommand(command string, rawPayload json.RawMessage) (map[
 
 		return a.programDibal500Format(payload)
 
+	case "read_dibal_format":
+		// Reads a Dibal 500-series label FORMAT's registers back from the
+		// scale — the inverse of program_dibal_format. See
+		// readDibal500Format and devices.ParseFormatRegisters.
+		var payload devices.Dibal500ReadFormatPayload
+		if err := json.Unmarshal(rawPayload, &payload); err != nil {
+			return nil, err
+		}
+
+		return a.readDibal500Format(payload)
+
 	case "ping_device":
 		var payload devices.PingDevicePayload
 		if err := json.Unmarshal(rawPayload, &payload); err != nil {
@@ -1212,6 +1223,40 @@ func (a *Agent) programDibal500Format(payload devices.Dibal500FormatProgramPaylo
 		"format_num": payload.FormatNum,
 		"fields":     len(payload.Fields),
 		"registers":  len(registers),
+	}, nil
+}
+
+// readDibal500Format asks the scale for a label FORMAT's registers back
+// ("Pedir formato"/"Recibir" in DFS/DLD) and decodes them — the inverse of
+// programDibal500Format. See runDibal500BridgeReadFormat's doc comment for
+// why this needs a server connection, not just a client read.
+func (a *Agent) readDibal500Format(payload devices.Dibal500ReadFormatPayload) (map[string]any, error) {
+	a.logger.Printf("read_dibal_format: format %d <- waga %s:%d (PC port %d)", payload.FormatNum, payload.ScaleIP, payload.ScalePort, payload.PCPort)
+
+	res, err := a.runDibal500BridgeReadFormat(payload.ScaleIP, payload.ScalePort, payload.PCIP, payload.PCPort, payload.TimeoutMs, payload.FormatNum)
+	if err != nil {
+		return nil, fmt.Errorf("nie odczytano formatu: %w", err)
+	}
+
+	registers := make([][]byte, 0, len(res.Registers))
+	for _, h := range res.Registers {
+		reg, decErr := hex.DecodeString(h)
+		if decErr != nil {
+			continue
+		}
+		registers = append(registers, reg)
+	}
+
+	formats, err := devices.ParseFormatRegisters(registers)
+	if err != nil {
+		return nil, fmt.Errorf("nie zdekodowano formatu: %w", err)
+	}
+
+	a.logger.Printf("read_dibal_format: format %d odczytany pomyślnie (%d formatów w odpowiedzi)", payload.FormatNum, len(formats))
+
+	return map[string]any{
+		"terminated_by": res.TerminatedBy,
+		"formats":       formats,
 	}, nil
 }
 

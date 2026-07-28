@@ -64,6 +64,20 @@ type Dibal500FormatProgramPayload struct {
 	Fields      []Dibal500FormatField `json:"fields"`
 }
 
+// Dibal500ReadFormatPayload is the payload for the "read_dibal_format"
+// command — asks the scale for a label FORMAT's registers back (the
+// physical layout), the inverse of program_dibal_format. FormatNum is an
+// int (not the zero-padded string used for writes) since 1-20 are valid to
+// read (the scale's built-in factory formats) but never to write.
+type Dibal500ReadFormatPayload struct {
+	ScaleIP   string `json:"scale_ip"`
+	ScalePort int    `json:"scale_port,omitempty"`
+	PCIP      string `json:"pc_ip,omitempty"`
+	PCPort    int    `json:"pc_port,omitempty"`
+	TimeoutMs int    `json:"timeout_ms,omitempty"`
+	FormatNum int    `json:"format_num"`
+}
+
 // Dibal500PLU holds the fields needed to build an L2 article register.
 type Dibal500PLU struct {
 	Mode        string `json:"mode,omitempty"`         // A / B / M (default M)
