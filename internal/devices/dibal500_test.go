@@ -631,3 +631,164 @@ func TestBuildL4Registers(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildFormatRequestRegister(t *testing.T) {
+	reg, err := BuildFormatRequestRegister("00", "00", 40)
+	if err != nil {
+		t.Fatalf("build error: %v", err)
+	}
+	if len(reg) != 130 {
+		t.Fatalf("register length = %d, want 130", len(reg))
+	}
+	if got := string(reg[0:9]); got != "00PB00001" {
+		t.Errorf("header = %q, want 00PB00001", got)
+	}
+	if got := string(reg[9:11]); got != "01" {
+		t.Errorf("mode = %q, want 01 (single format, 21-80)", got)
+	}
+	if got := string(reg[13:23]); got != "0000000040" {
+		t.Errorf("format number = %q, want 0000000040", got)
+	}
+	// Tail is zero-padded (ASCII '0'), not space-padded — this register
+	// goes through ComunicacionesBalPC.dll's generic string path, unlike
+	// 4R/H6 which LN.dll space-fills directly.
+	for i := 23; i < 130; i++ {
+		if reg[i] != '0' {
+			t.Fatalf("byte %d = %q, want '0' (zero padding)", i, reg[i])
+		}
+	}
+
+	// Formats 1-20 (and anything outside 21-80) always request "all
+	// formats" — the scale-side protocol has no single-format query for
+	// its own built-in factory slots.
+	allReg, err := BuildFormatRequestRegister("00", "00", 5)
+	if err != nil {
+		t.Fatalf("build error: %v", err)
+	}
+	if got := string(allReg[9:11]); got != "00" {
+		t.Errorf("mode for format 5 = %q, want 00 (all formats)", got)
+	}
+	if got := string(allReg[13:23]); got != "0000000000" {
+		t.Errorf("format number for format 5 = %q, want zero", got)
+	}
+}
+
+func TestIsFormatTransferEnd(t *testing.T) {
+	end, err := BuildFormatRequestRegister("00", "00", 40)
+	if err != nil {
+		t.Fatalf("build error: %v", err)
+	}
+	if !IsFormatTransferEnd(end) {
+		t.Errorf("PB echo with mode 01 should mark end of transfer")
+	}
+
+	header, err := BuildFormatRegisters("00", "00", "40", 432, 480, nil)
+	if err != nil {
+		t.Fatalf("build error: %v", err)
+	}
+	if IsFormatTransferEnd(header[0]) {
+		t.Errorf("4R header must not be mistaken for the PB terminator")
+	}
+}
+
+func TestParseFormatRegistersRoundTrip(t *testing.T) {
+	fields := []Dibal500FormatField{
+		{FieldID: 12, X: 0, Y: 10, Rotation: 0, Font: 60, Extra: 0},
+		{FieldID: 80, X: 169, Y: 196, Rotation: 0, Font: 80, Extra: 0},
+		{FieldID: 82, X: 169, Y: 216, Rotation: 1, Font: 80, Extra: 5},
+	}
+	regs, err := BuildFormatRegisters("00", "00", "40", 432, 480, fields)
+	if err != nil {
+		t.Fatalf("build error: %v", err)
+	}
+
+	formats, err := ParseFormatRegisters(regs)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	if len(formats) != 1 {
+		t.Fatalf("got %d formats, want 1", len(formats))
+	}
+	got := formats[0]
+	if got.FormatNumber != "40" {
+		t.Errorf("format number = %q, want 40", got.FormatNumber)
+	}
+	if got.Width != 432 || got.Height != 480 {
+		t.Errorf("size = %dx%d, want 432x480", got.Width, got.Height)
+	}
+	if len(got.Fields) != len(fields) {
+		t.Fatalf("got %d fields, want %d", len(got.Fields), len(fields))
+	}
+	for i, want := range fields {
+		if got.Fields[i] != want {
+			t.Errorf("field %d = %+v, want %+v", i, got.Fields[i], want)
+		}
+	}
+}
+
+func TestParseFormatRegistersWrapsAcrossLines(t *testing.T) {
+	// 9 fields must round-trip across the 7+2 H6 line split (mirrors
+	// TestBuildFormatRegisters' many-fields case).
+	many := make([]Dibal500FormatField, 9)
+	for i := range many {
+		many[i] = Dibal500FormatField{FieldID: 100 + i, X: i, Y: i * 10, Rotation: 0, Font: 60, Extra: 0}
+	}
+	regs, err := BuildFormatRegisters("00", "00", "41", 432, 480, many)
+	if err != nil {
+		t.Fatalf("build error: %v", err)
+	}
+	if len(regs) != 3 {
+		t.Fatalf("got %d registers, want 3 (4R header + 2 H6 lines)", len(regs))
+	}
+
+	formats, err := ParseFormatRegisters(regs)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	if len(formats) != 1 || len(formats[0].Fields) != 9 {
+		t.Fatalf("got %+v, want 1 format with 9 fields", formats)
+	}
+	for i, want := range many {
+		if formats[0].Fields[i] != want {
+			t.Errorf("field %d = %+v, want %+v", i, formats[0].Fields[i], want)
+		}
+	}
+}
+
+func TestParseFormatRegistersMultipleFormats(t *testing.T) {
+	// Requesting "all formats" (BuildFormatRequestRegister with a number
+	// outside 21-80) makes the scale stream several 4R+H6 groups back to
+	// back — the parser must split them by format number, not concatenate
+	// their fields together.
+	formatA, err := BuildFormatRegisters("00", "00", "21", 432, 480, []Dibal500FormatField{
+		{FieldID: 12, X: 0, Y: 10, Rotation: 0, Font: 60, Extra: 0},
+	})
+	if err != nil {
+		t.Fatalf("build error: %v", err)
+	}
+	formatB, err := BuildFormatRegisters("00", "00", "22", 400, 300, []Dibal500FormatField{
+		{FieldID: 6, X: 5, Y: 15, Rotation: 0, Font: 40, Extra: 0},
+		{FieldID: 3, X: 5, Y: 35, Rotation: 0, Font: 40, Extra: 0},
+	})
+	if err != nil {
+		t.Fatalf("build error: %v", err)
+	}
+
+	var stream [][]byte
+	stream = append(stream, formatA...)
+	stream = append(stream, formatB...)
+
+	formats, err := ParseFormatRegisters(stream)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	if len(formats) != 2 {
+		t.Fatalf("got %d formats, want 2", len(formats))
+	}
+	if formats[0].FormatNumber != "21" || len(formats[0].Fields) != 1 {
+		t.Errorf("format[0] = %+v, want format 21 with 1 field", formats[0])
+	}
+	if formats[1].FormatNumber != "22" || len(formats[1].Fields) != 2 {
+		t.Errorf("format[1] = %+v, want format 22 with 2 fields", formats[1])
+	}
+}

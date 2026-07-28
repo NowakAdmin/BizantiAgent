@@ -913,3 +913,181 @@ func BuildFormatRegisters(logicalAddr, group, formatNum string, width, height in
 
 	return registers, nil
 }
+
+// BuildFormatRequestRegister renders the "PB" register that asks the scale
+// to push back label-format registers over a server connection — the same
+// register DFS/DLD send when the user clicks "Pedir formato"/"Recibir".
+// Reverse-engineered from ComunicacionesBalPC.dll's FinDeDia.PB getter.
+//
+// Requesting a single format only works for 21-80 (scale-side protocol
+// rule, confirmed in the decompiled getter: "if (!todos && numeroFormato >
+// 20 && numeroFormato <= 80) mode='01' else mode='00', num=0"); anything
+// else requests ALL formats and the caller must pick the wanted one out of
+// the response by its own 4R header.
+//
+//	[0:2]    logical address
+//	[2:4]    "PB"
+//	[4:6]    group
+//	[6:9]    "001" (fixed)
+//	[9:11]   mode: "01" = single format, "00" = all formats
+//	[11:13]  "00" (fixed)
+//	[13:23]  requested format number, 10 digits zero-padded (0 when mode "00")
+//	[23:130] '0' padding — this register goes through ComunicacionesBalPC.dll's
+//	 generic string-register path (RellenarCadenaConCeros), which zero-pads
+//	 short registers. This differs from 4R/H6, which LN.dll builds directly
+//	 as a full 130-byte space-padded buffer — do not reuse fillSpaces here.
+func BuildFormatRequestRegister(logicalAddr, group string, formatNum int) ([]byte, error) {
+	reg := make([]byte, Dibal500RegisterLen)
+	for i := range reg {
+		reg[i] = '0'
+	}
+	copy(reg[0:2], pad2Digits(logicalAddr))
+	reg[2] = 'P'
+	reg[3] = 'B'
+	copy(reg[4:6], pad2Digits(group))
+	copy(reg[6:9], []byte("001"))
+
+	mode := 0
+	num := 0
+	if formatNum > 20 && formatNum <= 80 {
+		mode = 1
+		num = formatNum
+	}
+
+	modeBytes, err := intField(mode, 2)
+	if err != nil {
+		return nil, fmt.Errorf("tryb: %w", err)
+	}
+	copy(reg[9:11], modeBytes)
+	copy(reg[11:13], []byte("00"))
+
+	numBytes, err := intField(num, 10)
+	if err != nil {
+		return nil, fmt.Errorf("numer formatu: %w", err)
+	}
+	copy(reg[13:23], numBytes)
+
+	return reg, nil
+}
+
+// IsFormatTransferEnd reports whether reg is the "PB" echo the scale sends
+// back to mark the end of a format transfer (GestionarRegistro in
+// ComunicacionesBalPC.dll: register type "PB" with byte [11:13] "00" or
+// "01" ends the collection loop).
+func IsFormatTransferEnd(reg []byte) bool {
+	if len(reg) != Dibal500RegisterLen {
+		return false
+	}
+	if string(reg[2:4]) != "PB" {
+		return false
+	}
+	mode := string(reg[11:13])
+	return mode == "00" || mode == "01"
+}
+
+// ParsedDibalFormat is one label format decoded out of a "4R" header plus
+// its "H6" field lines, as returned by the scale after a format-request PB.
+type ParsedDibalFormat struct {
+	FormatNumber string
+	Width        int
+	Height       int
+	Fields       []Dibal500FormatField
+}
+
+// ParseFormatRegisters decodes raw registers received from the scale
+// (4R/H6, in the order they arrive) back into one or more label formats —
+// the inverse of BuildFormatRegisters. Multiple formats appear in one
+// response when the request was for "all formats" (see
+// BuildFormatRequestRegister); each new "4R" register starts a new format,
+// and "H6" registers immediately after it are consumed until its declared
+// field count is reached or the next "4R" appears. Non-4R/H6 registers
+// (e.g. the terminating "PB" echo) are ignored.
+func ParseFormatRegisters(registers [][]byte) ([]ParsedDibalFormat, error) {
+	var formats []ParsedDibalFormat
+	var current *ParsedDibalFormat
+	var wantFields int
+
+	for _, reg := range registers {
+		if len(reg) != Dibal500RegisterLen {
+			continue
+		}
+		switch string(reg[2:4]) {
+		case "4R":
+			formatNum := strings.TrimSpace(string(reg[7:9]))
+			fieldCount, err := parseIntField(reg[9:11])
+			if err != nil {
+				return nil, fmt.Errorf("format %s: liczba pól: %w", formatNum, err)
+			}
+			width, err := parseIntField(reg[41:45])
+			if err != nil {
+				return nil, fmt.Errorf("format %s: szerokość: %w", formatNum, err)
+			}
+			height, err := parseIntField(reg[45:49])
+			if err != nil {
+				return nil, fmt.Errorf("format %s: wysokość: %w", formatNum, err)
+			}
+			formats = append(formats, ParsedDibalFormat{FormatNumber: formatNum, Width: width, Height: height})
+			current = &formats[len(formats)-1]
+			wantFields = fieldCount
+
+		case "H6":
+			if current == nil || len(current.Fields) >= wantFields {
+				continue
+			}
+			remaining := wantFields - len(current.Fields)
+			count := dibal500FormatFieldsPerLine
+			if remaining < count {
+				count = remaining
+			}
+			for j := 0; j < count; j++ {
+				base := 9 + j*17
+				if base+17 > len(reg) {
+					break
+				}
+				tipo, err := parseIntField(reg[base : base+3])
+				if err != nil {
+					return nil, fmt.Errorf("format %s, pole %d: TIPO: %w", current.FormatNumber, len(current.Fields), err)
+				}
+				x, err := parseIntField(reg[base+3 : base+6])
+				if err != nil {
+					return nil, fmt.Errorf("format %s, pole %d: X: %w", current.FormatNumber, len(current.Fields), err)
+				}
+				y, err := parseIntField(reg[base+6 : base+10])
+				if err != nil {
+					return nil, fmt.Errorf("format %s, pole %d: Y: %w", current.FormatNumber, len(current.Fields), err)
+				}
+				rot, err := parseIntField(reg[base+10 : base+11])
+				if err != nil {
+					return nil, fmt.Errorf("format %s, pole %d: rotacja: %w", current.FormatNumber, len(current.Fields), err)
+				}
+				font, err := parseIntField(reg[base+11 : base+14])
+				if err != nil {
+					return nil, fmt.Errorf("format %s, pole %d: font: %w", current.FormatNumber, len(current.Fields), err)
+				}
+				extra, err := parseIntField(reg[base+14 : base+17])
+				if err != nil {
+					return nil, fmt.Errorf("format %s, pole %d: extra: %w", current.FormatNumber, len(current.Fields), err)
+				}
+				current.Fields = append(current.Fields, Dibal500FormatField{
+					FieldID: tipo, X: x, Y: y, Rotation: rot, Font: font, Extra: extra,
+				})
+			}
+		}
+	}
+
+	return formats, nil
+}
+
+// parseIntField reads a fixed-width ASCII-digit field, treating blank
+// (space-filled) fields as zero.
+func parseIntField(b []byte) (int, error) {
+	s := strings.TrimSpace(string(b))
+	if s == "" {
+		return 0, nil
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return 0, fmt.Errorf("wartość nienumeryczna %q", s)
+	}
+	return n, nil
+}

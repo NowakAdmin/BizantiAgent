@@ -1057,6 +1057,85 @@ func (a *Agent) runDibal500Bridge(scaleIP string, scalePort int, pcIP string, ti
 	return res, nil
 }
 
+// dibalBridgeReadFormatResult mirrors dibalcom-bridge's -read-format JSON output.
+type dibalBridgeReadFormatResult struct {
+	OK           bool     `json:"ok"`
+	Stage        string   `json:"stage"`
+	Error        string   `json:"error"`
+	TerminatedBy string   `json:"terminated_by"`
+	Registers    []string `json:"registers"`
+}
+
+// runDibal500BridgeReadFormat asks the scale for a label format's 4R/H6
+// registers (dibalcom-bridge's "-read-format" mode) and returns the raw
+// registers it collected, hex-encoded, for the caller to decode with
+// devices.ParseFormatRegisters. Serialized against runDibal500Bridge via the
+// same mutex — one TCP conversation with the scale at a time.
+//
+// The bridge itself bounds its read loop to a fixed 20s wall-clock budget
+// regardless of timeoutMs (see runReadFormat in cmd/dibalcom-bridge), so the
+// process-level context deadline here only needs to cover that plus a
+// margin — it is not the primary safety net.
+func (a *Agent) runDibal500BridgeReadFormat(scaleIP string, scalePort int, pcIP string, pcPort int, timeoutMs int, formatNum int) (dibalBridgeReadFormatResult, error) {
+	var res dibalBridgeReadFormatResult
+
+	scaleIP = strings.TrimSpace(scaleIP)
+	if scaleIP == "" {
+		return res, fmt.Errorf("brak scale_ip dla wagi Dibal 500")
+	}
+	if scalePort <= 0 {
+		scalePort = 3000
+	}
+	timeout := timeoutMs
+	if timeout <= 0 {
+		timeout = 3000
+	}
+
+	pcIP = strings.TrimSpace(pcIP)
+	if pcIP == "" {
+		pcIP = detectLocalIP(scaleIP)
+	}
+	if pcIP == "" {
+		return res, fmt.Errorf("nie udało się ustalić IP komputera (podaj pc_ip)")
+	}
+	if pcPort <= 0 {
+		pcPort = scalePort
+	}
+
+	bridge, err := dibalBridgePath()
+	if err != nil {
+		return res, err
+	}
+
+	a.dibal500Mu.Lock()
+	defer a.dibal500Mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, bridge,
+		"-read-format", strconv.Itoa(formatNum),
+		scaleIP, strconv.Itoa(scalePort),
+		pcIP, strconv.Itoa(pcPort),
+		strconv.Itoa(timeout),
+	)
+	out, runErr := cmd.Output()
+	_ = json.Unmarshal(bytes.TrimSpace(out), &res)
+
+	if !res.OK {
+		detail := res.Error
+		if detail == "" {
+			detail = strings.TrimSpace(string(out))
+		}
+		if detail == "" && runErr != nil {
+			detail = runErr.Error()
+		}
+		return res, fmt.Errorf("dibalcom-bridge -read-format (stage=%s): %s", res.Stage, detail)
+	}
+
+	return res, nil
+}
+
 // programDibal500 builds the article registers (L2 core record plus any X4
 // composition pages) and hands them to the 32-bit dibalcom-bridge, which
 // reuses Dibal's native commL.dll to send them all over one connection.

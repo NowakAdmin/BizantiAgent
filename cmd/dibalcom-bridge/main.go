@@ -25,6 +25,8 @@ import (
 	"syscall"
 	"time"
 	"unsafe"
+
+	"github.com/NowakAdmin/BizantiAgent/internal/devices"
 )
 
 type registerResult struct {
@@ -37,6 +39,11 @@ type registerResult struct {
 }
 
 func main() {
+	if len(os.Args) >= 2 && os.Args[1] == "-read-format" {
+		runReadFormat(os.Args[2:])
+		return
+	}
+
 	if len(os.Args) < 5 {
 		fail("usage: dibalcom-bridge <scaleIP> <scalePort> <pcIP> <pcPort> [timeoutMs] [transform] [echoTest] < registers.hex")
 	}
@@ -206,6 +213,183 @@ func readRegisters(r *os.File) ([][]byte, error) {
 		return nil, fmt.Errorf("stdin: %w", err)
 	}
 	return registers, nil
+}
+
+// runReadFormat implements "Pedir formato"/"Recibir" — requesting a label
+// format's 4R/H6 registers back from the scale. This is a genuinely
+// different flow from the write path above: DFS/DLD's own protocol (see
+// ComunicacionesBalPC.dll's FinDeDia.RecogerDiseniosBalanza) sends the
+// request ("PB" register) over a CLIENT connection, but receives the
+// response over a separate SERVER connection that the scale connects back
+// to — reusing ReadRegisterWEx2 on a CLIENT handle here would not work,
+// this DLL only pushes format data to a listening server socket.
+//
+// usage: dibalcom-bridge -read-format <formatNum> <scaleIP> <scalePort> <pcIP> <pcPort> [timeoutMs]
+func runReadFormat(args []string) {
+	if len(args) < 5 {
+		fail("usage: dibalcom-bridge -read-format <formatNum> <scaleIP> <scalePort> <pcIP> <pcPort> [timeoutMs]")
+	}
+
+	formatNum, err := strconv.Atoi(args[0])
+	if err != nil {
+		fail("format_num: " + err.Error())
+	}
+	scaleIP := args[1]
+	scalePort, _ := strconv.Atoi(args[2])
+	pcIP := args[3]
+	pcPort, _ := strconv.Atoi(args[4])
+
+	timeout := 3000
+	if len(args) >= 6 {
+		if t, convErr := strconv.Atoi(args[5]); convErr == nil && t > 0 {
+			timeout = t
+		}
+	}
+
+	dll, err := loadCommL()
+	if err != nil {
+		fail(err.Error())
+	}
+	defer func() {
+		_ = dll.Release()
+	}()
+
+	clientConnectProc, err := dll.FindProc("ClientConnectFromWEx2")
+	if err != nil {
+		fail("brak eksportu ClientConnectFromWEx2: " + err.Error())
+	}
+	sendProc, err := dll.FindProc("SendRegisterWEx3")
+	if err != nil {
+		fail("brak eksportu SendRegisterWEx3: " + err.Error())
+	}
+	clientCloseProc, _ := dll.FindProc("ClientCloseWEx2")
+	serverConnectProc, err := dll.FindProc("ServerConnectToWEx2")
+	if err != nil {
+		fail("brak eksportu ServerConnectToWEx2: " + err.Error())
+	}
+	serverCloseProc, _ := dll.FindProc("ServerCloseWEx2")
+	readProc, err := dll.FindProc("ReadRegisterWEx2")
+	if err != nil {
+		fail("brak eksportu ReadRegisterWEx2: " + err.Error())
+	}
+
+	emptyLog := []byte{0, 0}
+	scaleB := append([]byte(scaleIP), 0)
+	pcB := append([]byte(pcIP), 0)
+
+	// 1. Open the client connection and send the format request ("PB").
+	ch, _, _ := clientConnectProc.Call(
+		uintptr(unsafe.Pointer(&scaleB[0])),
+		uintptr(scalePort),
+		uintptr(unsafe.Pointer(&pcB[0])),
+		uintptr(scalePort),
+		uintptr(unsafe.Pointer(&emptyLog[0])),
+		uintptr(timeout),
+	)
+	clientHandle := int32(ch)
+	if clientHandle <= 0 {
+		emit(map[string]any{"ok": false, "stage": "client_connect", "handle": int(clientHandle)})
+		os.Exit(2)
+	}
+
+	pbReg, err := devices.BuildFormatRequestRegister("00", "00", formatNum)
+	if err != nil {
+		_, _, _ = clientCloseProc.Call(uintptr(clientHandle), uintptr(unsafe.Pointer(&emptyLog[0])))
+		fail("PB: " + err.Error())
+	}
+
+	sr, _, _ := sendProc.Call(
+		uintptr(clientHandle),
+		uintptr(unsafe.Pointer(&pbReg[0])),
+		uintptr(len(pbReg)),
+		uintptr(unsafe.Pointer(&emptyLog[0])),
+		uintptr(timeout),
+		0, // bTransformacion = false
+		1, // bSoloError = true
+	)
+	if sendResult := int32(sr); sendResult != 1 {
+		_, _, _ = clientCloseProc.Call(uintptr(clientHandle), uintptr(unsafe.Pointer(&emptyLog[0])))
+		emit(map[string]any{"ok": false, "stage": "send_pb", "result": int(sendResult)})
+		os.Exit(2)
+	}
+
+	// 2. Open the server socket the scale will connect back to with the
+	// design registers. Uses pcPort for both sides, matching
+	// AbrirConexionServidor's own call (oBalanza.PuertoEnvio for both
+	// iPuertoBal and iPuertoPC).
+	sh, _, _ := serverConnectProc.Call(
+		uintptr(unsafe.Pointer(&scaleB[0])),
+		uintptr(pcPort),
+		uintptr(unsafe.Pointer(&pcB[0])),
+		uintptr(pcPort),
+		uintptr(unsafe.Pointer(&emptyLog[0])),
+		uintptr(timeout),
+	)
+	serverHandle := int32(sh)
+	if serverHandle <= 0 {
+		_, _, _ = clientCloseProc.Call(uintptr(clientHandle), uintptr(unsafe.Pointer(&emptyLog[0])))
+		emit(map[string]any{"ok": false, "stage": "server_connect", "handle": int(serverHandle)})
+		os.Exit(2)
+	}
+
+	// 3. Read registers until the PB terminator echo, a hard iteration
+	// cap, or a fixed overall wall-clock budget — whichever comes first.
+	// Every ReadRegisterWEx2 call itself is bounded by `timeout`, so this
+	// loop cannot hang the process indefinitely even if the scale never
+	// answers; the caller's own process-level timeout (see
+	// runDibal500BridgeReadFormat in the agent) is a second, independent
+	// backstop.
+	const maxIterations = 60
+	const overallBudget = 20 * time.Second
+	deadline := time.Now().Add(overallBudget)
+
+	var collected [][]byte
+	terminatedBy := "max_iterations"
+
+readLoop:
+	for i := 0; i < maxIterations; i++ {
+		if time.Now().After(deadline) {
+			terminatedBy = "overall_timeout"
+			break
+		}
+
+		buf := make([]byte, 130)
+		outLen := make([]int32, 1)
+		rr, _, _ := readProc.Call(
+			uintptr(serverHandle),
+			uintptr(unsafe.Pointer(&buf[0])),
+			uintptr(unsafe.Pointer(&outLen[0])),
+			uintptr(unsafe.Pointer(&emptyLog[0])),
+			uintptr(timeout),
+			0, // bTransformacion = false, matches our raw CP1250 write path
+		)
+		switch readResult := int32(rr); readResult {
+		case 1:
+			if outLen[0] == 130 {
+				reg := make([]byte, 130)
+				copy(reg, buf)
+				collected = append(collected, reg)
+				if devices.IsFormatTransferEnd(reg) {
+					terminatedBy = "pb"
+					break readLoop
+				}
+			}
+		case 0:
+			time.Sleep(100 * time.Millisecond)
+		default:
+			terminatedBy = fmt.Sprintf("read_error_%d", readResult)
+			break readLoop
+		}
+	}
+
+	_, _, _ = serverCloseProc.Call(uintptr(serverHandle), uintptr(1), uintptr(unsafe.Pointer(&emptyLog[0])))
+	_, _, _ = clientCloseProc.Call(uintptr(clientHandle), uintptr(unsafe.Pointer(&emptyLog[0])))
+
+	hexRegs := make([]string, len(collected))
+	for i, reg := range collected {
+		hexRegs[i] = hex.EncodeToString(reg)
+	}
+	emit(map[string]any{"ok": true, "stage": "read_format", "terminated_by": terminatedBy, "registers": hexRegs})
 }
 
 // loadCommL loads commL.dll from the bridge's own directory first, then the

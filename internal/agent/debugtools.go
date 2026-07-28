@@ -128,6 +128,48 @@ func (a *Agent) executeDebugCommand(command string, rawPayload json.RawMessage) 
 		}
 		return map[string]any{"registers": res.Registers, "sent_hex": hexRegs}, true, nil
 
+	case "dibal500_read_format":
+		// Research spike: asks the scale for a format's 4R/H6 registers
+		// back ("Pedir formato"/"Recibir" in DFS/DLD) via
+		// devices.BuildFormatRequestRegister + dibalcom-bridge's
+		// -read-format mode, then decodes the result with
+		// devices.ParseFormatRegisters. Test on a format we already
+		// control (e.g. 40) first and compare against what
+		// dibal500_send_format last wrote, before trusting this for
+		// unknown/factory formats.
+		var payload struct {
+			ScaleIP   string `json:"scale_ip"`
+			ScalePort int    `json:"scale_port,omitempty"`
+			PCIP      string `json:"pc_ip,omitempty"`
+			PCPort    int    `json:"pc_port,omitempty"`
+			TimeoutMs int    `json:"timeout_ms,omitempty"`
+			FormatNum int    `json:"format_num"`
+		}
+		if err := json.Unmarshal(rawPayload, &payload); err != nil {
+			return nil, true, err
+		}
+
+		res, err := a.runDibal500BridgeReadFormat(payload.ScaleIP, payload.ScalePort, payload.PCIP, payload.PCPort, payload.TimeoutMs, payload.FormatNum)
+		if err != nil {
+			return nil, true, err
+		}
+
+		registers := make([][]byte, 0, len(res.Registers))
+		for _, h := range res.Registers {
+			reg, decErr := hex.DecodeString(h)
+			if decErr != nil {
+				continue
+			}
+			registers = append(registers, reg)
+		}
+
+		formats, err := devices.ParseFormatRegisters(registers)
+		if err != nil {
+			return map[string]any{"terminated_by": res.TerminatedBy, "raw_hex": res.Registers, "parse_error": err.Error()}, true, nil
+		}
+
+		return map[string]any{"terminated_by": res.TerminatedBy, "raw_hex": res.Registers, "formats": formats}, true, nil
+
 	case "tcp_capture":
 		var payload struct {
 			BindHost   string `json:"bind_host"`
