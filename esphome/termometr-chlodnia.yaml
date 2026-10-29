@@ -1,0 +1,95 @@
+# Termometr chłodnia/mroźnia dla BizantiAgent (komenda read_temperature).
+# Płytka: DFRobot FireBeetle 2 ESP32-UE (DFR1140), antena zewnętrzna, bez akumulatora.
+# Każda sonda DS18B20 na osobnym pinie z rezystorem 4,7 kΩ DATA -> 3V3.
+#
+# Agent czyta: GET http://<ip>/sensor/chlodnia  -> {"id":"sensor-chlodnia","value":2.31,...}
+# Nazwy sond (name) muszą zgadzać się z kluczami "sensors" w meta.thermometer urządzenia w Bizanti.
+#
+# Flash: esphome run termometr-chlodnia.yaml  (pierwszy raz przez USB, potem OTA)
+# Sekrety w secrets.yaml obok: wifi_ssid, wifi_password, ota_password, ap_password, web_password.
+#
+# Aktualizacja z Bizanti: `esphome compile termometr-chlodnia.yaml`, potem plik OTA z
+# .esphome/build/termometr-chlodnia/.pioenvs/termometr-chlodnia/ (firmware.ota.bin, a w starszych wersjach
+# firmware.bin — NIE firmware.factory.bin) wgraj akcją "Aktualizuj firmware ESP" na urządzeniu agenta.
+
+substitutions:
+  # Sprawdź pinout FireBeetle 2 ESP32-UE w wiki DFRobot. Nie używaj GPIO 0/2/12/15 (strapping).
+  pin_chlodnia: GPIO4
+  pin_mroznia: GPIO25
+  static_ip: 192.168.0.50
+  gateway: 192.168.0.1
+  subnet: 255.255.255.0
+
+esphome:
+  name: termometr-chlodnia
+
+esp32:
+  board: esp32dev
+  framework:
+    type: esp-idf
+
+logger:
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  manual_ip:
+    static_ip: ${static_ip}
+    gateway: ${gateway}
+    subnet: ${subnet}
+  # Awaryjny hotspot, gdy WiFi zakładu niedostępne (konfiguracja z telefonu).
+  ap:
+    password: !secret ap_password
+
+captive_portal:
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+  # POST /update: BizantiAgent wgrywa tędy firmware z Nova.
+  - platform: web_server
+
+# Po kilku nieudanych startach z rzędu ESP uruchamia się w trybie awaryjnym z samym OTA.
+safe_mode:
+
+# REST JSON czytany przez BizantiAgent; bez Home Assistant API.
+# Login/hasło wpisz też w Bizanti (meta.thermometer.username/password) — bez auth każdy w sieci mógłby wgrać firmware.
+web_server:
+  port: 80
+  auth:
+    username: bizanti
+    password: !secret web_password
+
+one_wire:
+  - platform: gpio
+    pin: ${pin_chlodnia}
+    id: bus_chlodnia
+  - platform: gpio
+    pin: ${pin_mroznia}
+    id: bus_mroznia
+
+sensor:
+  - platform: dallas_temp
+    one_wire_id: bus_chlodnia
+    name: chlodnia
+    update_interval: 30s
+    filters:
+      # ponytail: kalibracja 2-punktowa. Lewa strona = odczyt sondy, prawa = termometr referencyjny.
+      # DS18B20 poniżej -10 °C ma gwarancję tylko ±2 °C, więc punkt w mroźni jest obowiązkowy.
+      - calibrate_linear:
+          - 0.0 -> 0.0
+          - -20.0 -> -20.0
+
+  - platform: dallas_temp
+    one_wire_id: bus_mroznia
+    name: mroznia
+    update_interval: 30s
+    filters:
+      - calibrate_linear:
+          - 0.0 -> 0.0
+          - -20.0 -> -20.0
+
+  # Diagnostyka zasięgu w szafie (dBm, lepiej niż -75).
+  - platform: wifi_signal
+    name: wifi_rssi
+    update_interval: 60s
