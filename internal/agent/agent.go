@@ -542,6 +542,37 @@ func summarizeResponseBody(body []byte) string {
 	return text
 }
 
+// downloadFromServer fetches a file from an authenticated Bizanti API path, capped at maxBytes.
+func (a *Agent) downloadFromServer(path string, maxBytes int64) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	request, err := a.newAPIRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		return nil, err
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("HTTP %d", response.StatusCode)
+	}
+
+	data, err := io.ReadAll(io.LimitReader(response.Body, maxBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > maxBytes {
+		return nil, fmt.Errorf("plik większy niż %d B", maxBytes)
+	}
+
+	return data, nil
+}
+
 func (a *Agent) newAPIRequest(ctx context.Context, method string, path string, body io.Reader) (*http.Request, error) {
 	base := strings.TrimRight(strings.TrimSpace(a.cfg.ServerURL), "/")
 	if base == "" {
@@ -938,6 +969,27 @@ func (a *Agent) executeCommand(command string, rawPayload json.RawMessage) (map[
 		}
 
 		return result, nil
+
+	case "read_temperature":
+		var payload devices.ReadTemperaturePayload
+		if err := json.Unmarshal(rawPayload, &payload); err != nil {
+			return nil, err
+		}
+
+		return devices.ReadTemperatures(payload)
+
+	case "update_esp_firmware":
+		var payload devices.EspFirmwarePayload
+		if err := json.Unmarshal(rawPayload, &payload); err != nil {
+			return nil, err
+		}
+
+		firmware, err := a.downloadFromServer(payload.FirmwarePath, 8<<20)
+		if err != nil {
+			return nil, fmt.Errorf("pobieranie firmware z Bizanti nieudane: %w", err)
+		}
+
+		return devices.UploadEspFirmware(payload, firmware)
 
 	case "read_printer_settings":
 		var payload devices.ReadPrinterSettingsPayload
